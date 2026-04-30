@@ -1245,43 +1245,59 @@ function Invoke-VersionPicker {
         Write-Host "  Available releases (newest first):" -ForegroundColor White
         Write-Host ""
 
+        # Calculate column widths for alignment
+        $maxVerLen = 0
+        for ($vi = $startIdx; $vi -le $endIdx; $vi++) {
+            $vLen = $releases[$vi].Version.Length
+            if ($vLen -gt $maxVerLen) { $maxVerLen = $vLen }
+        }
+
         for ($i = $startIdx; $i -le $endIdx; $i++) {
             $r = $releases[$i]
             $num = "[$($i + 1)]".PadLeft(5)
-            $typeLabel = $r.Type -eq 'Stable' ? '         ' : ' (beta)  '
-            $dateLabel = $r.Date ? "  $($r.Date)" : ''
+            $verPadded = $r.Version.PadRight($maxVerLen)
+            $typeCol = $r.Type -eq 'Stable' ? '        ' : ' (beta) '
 
-            # Build the tag that appears after the version
+            # Convert date from YYYY/MM/DD to MM/DD/YYYY
+            $dateCol = '          '
+            if ($r.Date -and $r.Date -match '^(\d{4})/(\d{2})/(\d{2})$') {
+                $dateCol = "$($Matches[2])/$($Matches[3])/$($Matches[1])"
+            }
+
+            # Build the tag that appears at the end
             $tag = ''
-            if ($r.Version -in $installedVersions) { $tag += ' (installed)' }
+            if ($r.Version -in $installedVersions) { $tag = '  (installed)' }
             if ($i -eq 0 -and $latestStableIdx -ne 0) {
-                # Newest overall is a beta, mark it
-                $tag += ' <-- newest'
+                $tag = '  <-- newest'
             }
             elseif ($i -eq 0) {
-                $tag += ' <-- latest'
+                $tag = '  <-- latest'
             }
             if ($i -eq $latestStableIdx -and $latestStableIdx -ne 0) {
-                $tag += ' <-- latest stable'
+                $tag = '  <-- latest stable'
+            }
+            # Installed tag takes priority but can combine
+            if ($r.Version -in $installedVersions -and $i -eq 0) {
+                $tag = '  (installed) <-- latest'
             }
 
             # Pick color based on type and position
+            $line = "  $num $verPadded$typeCol $dateCol"
             if ($r.Version -in $installedVersions) {
-                Write-Host "  $num $($r.Version)${typeLabel}" -NoNewline -ForegroundColor White
-                Write-Host "${dateLabel}${tag}" -ForegroundColor DarkGray
+                Write-Host "$line" -NoNewline -ForegroundColor White
+                Write-Host "$tag" -ForegroundColor DarkGray
             }
             elseif ($i -eq 0) {
-                Write-Host "  $num $($r.Version)${typeLabel}" -NoNewline -ForegroundColor Green
-                Write-Host "${dateLabel}" -NoNewline -ForegroundColor DarkGray
+                Write-Host "$line" -NoNewline -ForegroundColor Green
                 Write-Host "$tag" -ForegroundColor DarkGreen
             }
             elseif ($r.Type -eq 'Beta') {
-                Write-Host "  $num $($r.Version)${typeLabel}" -NoNewline -ForegroundColor DarkYellow
-                Write-Host "${dateLabel}${tag}" -ForegroundColor DarkGray
+                Write-Host "$line" -NoNewline -ForegroundColor DarkYellow
+                Write-Host "$tag" -ForegroundColor DarkGray
             }
             else {
-                Write-Host "  $num $($r.Version)${typeLabel}" -NoNewline -ForegroundColor Cyan
-                Write-Host "${dateLabel}${tag}" -ForegroundColor DarkGray
+                Write-Host "$line" -NoNewline -ForegroundColor Cyan
+                Write-Host "$tag" -ForegroundColor DarkGray
             }
         }
 
