@@ -779,6 +779,16 @@ function Invoke-CustomModSettingsMenu {
                     continue
                 }
 
+                # Confirm the version before fetching
+                Write-Info "This will compare your mods/ folder against the official mod list"
+                Write-Info "for GTNH v$installedVer. Make sure this matches your installed version."
+                Write-Host ""
+                if (-not (Confirm-Action "Scan using v$installedVer?")) {
+                    Write-Info "You can change your installed version in Update Preferences."
+                    Wait-ForKey
+                    continue
+                }
+
                 Write-Info "Fetching official mod list for v$installedVer..."
                 $officialMods = Get-OfficialModList -Version $installedVer
                 if (-not $officialMods) {
@@ -794,22 +804,40 @@ function Invoke-CustomModSettingsMenu {
                     $officialBaseNames[(Get-ModBaseName -FileName $modName)] = $true
                 }
 
-                # Get local JARs and find ones not in the official list
+                # Build base name set from already-tracked custom mods
+                $trackedBaseNames = @{}
+                foreach ($tracked in @($modList)) {
+                    $trackedBaseNames[(Get-ModBaseName -FileName $tracked)] = $tracked
+                }
+
+                # Get local JARs and categorize
                 $localJars = @(Get-ChildItem -LiteralPath $modsDir -Filter '*.jar' -File | ForEach-Object { $_.Name })
-                $alreadyTracked = @($modList)
                 $candidates = @()
+                $alreadyTrackedFound = @()
                 foreach ($jar in $localJars) {
                     $base = Get-ModBaseName -FileName $jar
-                    if (-not $officialBaseNames.ContainsKey($base) -and $jar -notin $alreadyTracked) {
-                        $candidates += $jar
+                    if (-not $officialBaseNames.ContainsKey($base)) {
+                        if ($trackedBaseNames.ContainsKey($base)) {
+                            $alreadyTrackedFound += $jar
+                        } else {
+                            $candidates += $jar
+                        }
+                    }
+                }
+
+                # Show already-tracked custom mods
+                if ($alreadyTrackedFound.Count -gt 0) {
+                    Write-Host ""
+                    Write-Info "Already tracked as custom ($($alreadyTrackedFound.Count)):"
+                    foreach ($mod in ($alreadyTrackedFound | Sort-Object)) {
+                        Write-Host "    * $mod" -ForegroundColor Cyan
                     }
                 }
 
                 if ($candidates.Count -eq 0) {
-                    Write-Success "No untracked custom mods found. All mods match the official v$installedVer list."
-                    if ($alreadyTracked.Count -gt 0) {
-                        Write-Info "You have $($alreadyTracked.Count) custom mod(s) already tracked."
-                    }
+                    Write-Host ""
+                    Write-Success "No new custom mods found. All untracked mods match the official v$installedVer list."
+                    Write-Info "Official mods: $($officialMods.Count) | Your mods: $($localJars.Count) | Custom tracked: $($alreadyTrackedFound.Count)"
                     Wait-ForKey
                     continue
                 }
