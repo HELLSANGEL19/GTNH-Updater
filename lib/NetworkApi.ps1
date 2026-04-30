@@ -1,4 +1,4 @@
-# ============================================================================
+﻿# ============================================================================
 # Group 6: Network / GitHub API - HTTP requests, downloads, rate-limit handling
 # ============================================================================
 # Functions:
@@ -658,11 +658,9 @@ function Get-ScriptUpdateInfo {
         Check if a newer version of the GTNH Updater script is available.
     .DESCRIPTION
         Queries the configured GitHub repository for the latest release and
-        compares the tag with $script:UpdaterVersion. Returns update info
-        or $null if up to date or on failure.
-    .PARAMETER RepoUrl
-        The GitHub API URL for the script's releases. Defaults to the
-        script-level variable $script:ScriptUpdateApi.
+        compares the tag with $script:UpdaterVersion. Strips pre-release
+        suffixes (e.g., -beta) for proper version comparison. Returns update
+        info or $null if up to date or on failure.
     .OUTPUTS
         PSCustomObject with Version, DownloadUrl, ReleaseUrl, Body.
         Returns $null if up to date or on failure.
@@ -681,38 +679,52 @@ function Get-ScriptUpdateInfo {
     $latestTag = $release.tag_name -replace '^v', ''
     $currentVer = $script:UpdaterVersion
 
-    # Simple string comparison - works for semver if both are X.Y.Z
-    try {
-        if ([version]$latestTag -gt [version]$currentVer) {
-            # Find the zip asset for download
-            $zipAsset = $release.assets | Where-Object { $_.name -match '\.zip$' } | Select-Object -First 1
-            $downloadUrl = $zipAsset ? $zipAsset.browser_download_url : $release.zipball_url
+    # Compare versions: strip pre-release suffixes for [version] comparison
+    $latestBase = $latestTag -replace '[-_].*', ''
+    $currentBase = $currentVer -replace '[-_].*', ''
 
-            return [PSCustomObject]@{
-                Version     = $latestTag
-                DownloadUrl = $downloadUrl
-                ReleaseUrl  = $release.html_url
-                Body        = $release.body
+    $isNewer = $false
+    try {
+        $latestParsed = [version]$latestBase
+        $currentParsed = [version]$currentBase
+        if ($latestParsed -gt $currentParsed) {
+            $isNewer = $true
+        } elseif ($latestParsed -eq $currentParsed) {
+            # Same base version: release without suffix is newer than one with suffix
+            # e.g., 1.0.0 is newer than 1.0.0-beta
+            $latestHasSuffix = $latestTag -match '[-_]'
+            $currentHasSuffix = $currentVer -match '[-_]'
+            if ($currentHasSuffix -and -not $latestHasSuffix) {
+                $isNewer = $true
+            } elseif ($latestTag -ne $currentVer) {
+                # Different suffixes on same base, treat remote as newer
+                $isNewer = $true
             }
         }
     }
     catch {
-        # Version parsing failed, fall back to string comparison
+        # Version parsing failed entirely, fall back to string comparison
         if ($latestTag -ne $currentVer) {
-            $zipAsset = $release.assets | Where-Object { $_.name -match '\.zip$' } | Select-Object -First 1
-            $downloadUrl = $zipAsset ? $zipAsset.browser_download_url : $release.zipball_url
-
-            return [PSCustomObject]@{
-                Version     = $latestTag
-                DownloadUrl = $downloadUrl
-                ReleaseUrl  = $release.html_url
-                Body        = $release.body
-            }
+            $isNewer = $true
         }
     }
 
-    return $null  # Up to date
+    if (-not $isNewer) {
+        return $null  # Up to date
+    }
+
+    # Find the zip asset for download, fall back to GitHub's auto-generated source zip
+    $zipAsset = $release.assets | Where-Object { $_.name -like '*.zip' } | Select-Object -First 1
+    $downloadUrl = $zipAsset ? $zipAsset.browser_download_url : $release.zipball_url
+
+    return [PSCustomObject]@{
+        Version     = $latestTag
+        DownloadUrl = $downloadUrl
+        ReleaseUrl  = $release.html_url
+        Body        = $release.body
+    }
 }
+
 
 function Get-LatestNightlyUpdater {
     <#
