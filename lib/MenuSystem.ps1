@@ -1294,8 +1294,10 @@ function Invoke-ScriptUpdateCheck {
     .SYNOPSIS
         Check if a newer version of the GTNH Updater script is available.
     .DESCRIPTION
-        Queries the configured GitHub repository and offers to open the download
-        page if a newer version is found. Does nothing if no update URL is configured.
+        Queries the configured GitHub repository. If a newer version is found,
+        offers to download and install it automatically. The update downloads
+        the release zip, extracts it over the current installation, and prompts
+        the user to restart.
     #>
 
     $updateInfo = Get-ScriptUpdateInfo
@@ -1311,7 +1313,6 @@ function Invoke-ScriptUpdateCheck {
     Write-Host ""
 
     if ($updateInfo.Body) {
-        # Show first few lines of release notes
         $bodyLines = ($updateInfo.Body -split "`n") | Select-Object -First 5
         foreach ($line in $bodyLines) {
             Write-Host "  $($line.TrimEnd())" -ForegroundColor Gray
@@ -1322,21 +1323,110 @@ function Invoke-ScriptUpdateCheck {
         Write-Host ""
     }
 
-    Write-MenuOption "D" "Download update"
+    Write-MenuOption "U" "Update now"
+    Write-MenuOption "V" "View release page in browser"
     Write-MenuOption "S" "Skip for now"
 
     $choice = Read-MenuChoice "Choose"
 
-    if ($choice -eq 'D' -or $choice -eq 'd') {
+    if ($choice -eq 'V' -or $choice -eq 'v') {
         if ($updateInfo.ReleaseUrl) {
             Start-Process $updateInfo.ReleaseUrl
             Write-Success "Opened release page in your browser."
-            Write-Info "Download the latest version and replace your GTNHUpdater folder."
-        } else {
-            Write-Info "Release URL: $($updateInfo.DownloadUrl)"
         }
         Wait-ForKey
+        return
     }
+
+    if ($choice -ne 'U' -and $choice -ne 'u') {
+        return
+    }
+
+    # Download and apply the update
+    Write-Step "Downloading v$($updateInfo.Version)..."
+
+    $tempDir = $script:TempDir
+    if (-not (Test-Path -LiteralPath $tempDir)) {
+        New-Item -Path $tempDir -ItemType Directory -Force | Out-Null
+    }
+
+    $zipPath = Join-Path $tempDir "gtnh-updater-$($updateInfo.Version).zip"
+    $downloaded = Invoke-FileDownload -Url $updateInfo.DownloadUrl -OutPath $zipPath -Description 'updater update'
+
+    if (-not $downloaded) {
+        Write-Err "Download failed. You can update manually from the release page."
+        if ($updateInfo.ReleaseUrl) {
+            Write-Info "Release: $($updateInfo.ReleaseUrl)"
+        }
+        Wait-ForKey
+        return
+    }
+
+    Write-Step "Installing update..."
+
+    $extractDir = Join-Path $tempDir "updater-update-$($updateInfo.Version)"
+    if (Test-Path -LiteralPath $extractDir) {
+        Remove-Item -LiteralPath $extractDir -Recurse -Force
+    }
+
+    try {
+        Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+        New-Item -Path $extractDir -ItemType Directory -Force | Out-Null
+        [System.IO.Compression.ZipFile]::ExtractToDirectory($zipPath, $extractDir, $true)
+    }
+    catch {
+        Write-Err "Extraction failed: $($_.Exception.Message)"
+        Wait-ForKey
+        return
+    }
+
+    # Find the content root (zip might have a single root folder)
+    $contentRoot = $extractDir
+    $topItems = Get-ChildItem -LiteralPath $extractDir
+    if ($topItems.Count -eq 1 -and $topItems[0].PSIsContainer) {
+        $contentRoot = $topItems[0].FullName
+    }
+
+    # Copy new files over the current installation
+    $scriptDir = $script:ScriptDir
+    $updatedFiles = 0
+    try {
+        Get-ChildItem -LiteralPath $contentRoot -Recurse -File | ForEach-Object {
+            $relativePath = $_.FullName.Substring($contentRoot.Length + 1)
+            $destPath = Join-Path $scriptDir $relativePath
+            $destDir = Split-Path -Parent $destPath
+            if (-not (Test-Path -LiteralPath $destDir)) {
+                New-Item -Path $destDir -ItemType Directory -Force | Out-Null
+            }
+            Copy-Item -LiteralPath $_.FullName -Destination $destPath -Force
+            $updatedFiles++
+        }
+    }
+    catch {
+        Write-Err "Failed to copy files: $($_.Exception.Message)"
+        Write-Warn "Your installation may be in a mixed state. Re-download manually."
+        if ($updateInfo.ReleaseUrl) {
+            Write-Info "Release: $($updateInfo.ReleaseUrl)"
+        }
+        Wait-ForKey
+        return
+    }
+
+    # Clean up
+    try {
+        Remove-Item -LiteralPath $zipPath -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $extractDir -Recurse -Force -ErrorAction SilentlyContinue
+    } catch {}
+
+    Write-Success "Updated to v$($updateInfo.Version) ($updatedFiles files)."
+    Write-Host ""
+    Write-Info "Restart the updater to use the new version."
+    Write-Host ""
+    Wait-ForKey
+
+    # Exit so the user restarts with the new code
+    Write-Log "[MAIN] Self-update applied: v$($script:UpdaterVersion) -> v$($updateInfo.Version). Exiting for restart."
+    exit 0
 }
 
 function Invoke-VersionPicker {
