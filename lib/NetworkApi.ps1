@@ -497,8 +497,8 @@ function Get-WebsiteReleases {
     .PARAMETER PackType
         The Java version: 'java17' or 'java8'. Defaults to 'java17'.
     .OUTPUTS
-        Array of PSCustomObject with Version, Type (Stable/Beta), ServerZipUrl,
-        ServerZipName, ClientZipUrl, ClientZipName, ReleaseUrl.
+        Array of PSCustomObject with Version, Type (Stable/Beta), Date (YYYY/MM/DD),
+        ServerZipUrl, ServerZipName, ClientZipUrl, ClientZipName, ReleaseUrl.
         Returns $null if fetch fails.
     #>
     param(
@@ -513,8 +513,9 @@ function Get-WebsiteReleases {
         $content = $response.Content
 
         # Match version entries: "2.8.4 Stable release" or "2.8.0-beta-4 Beta release"
+        # Followed by whitespace and a date like "2025/12/23"
         # Version patterns: X.Y.Z (stable) or X.Y.Z-beta-N, X.Y.Z-rc-N, X.Y.Z-RC-N, X.Y.Z-RC1 (beta/RC)
-        $entryPattern = '(\d+\.\d+\.\d+(?:[-_](?:beta|rc)[-_]?\d*)?)\s+(Stable|Beta)\s+release'
+        $entryPattern = '(\d+\.\d+\.\d+(?:[-_](?:beta|rc)[-_]?\d*)?)\s+(Stable|Beta)\s+release\s+(\d{4}/\d{2}/\d{2})'
         $regexMatches = [regex]::Matches($content, $entryPattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
 
         if ($regexMatches.Count -eq 0) {
@@ -530,6 +531,7 @@ function Get-WebsiteReleases {
             # Normalize type to title case for consistent comparison
             $rawType = $m.Groups[2].Value
             $type = $rawType.Substring(0,1).ToUpper() + $rawType.Substring(1).ToLower()
+            $date = $m.Groups[3].Value
 
             $serverZipName = "GT_New_Horizons_${version}_Server_${javaSuffix}.zip"
             $serverZipUrl = "$($script:GtnhDownloadsBase)/ServerPacks/$serverZipName"
@@ -539,6 +541,7 @@ function Get-WebsiteReleases {
             $releases += [PSCustomObject]@{
                 Version       = $version
                 Type          = $type
+                Date          = $date
                 ServerZipUrl  = $serverZipUrl
                 ServerZipName = $serverZipName
                 ClientZipUrl  = $clientZipUrl

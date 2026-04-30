@@ -333,25 +333,55 @@ function Invoke-InteractiveSetup {
     }
     Write-Success "Server pack type: $($config.JavaVersion)"
 
-    # Current installed version - try to auto-detect first
-    $detectedVersion = $null
+    # Current installed version - try to auto-detect independently for server and client
+    $serverDetected = $null
+    $clientDetected = $null
     if (-not [string]::IsNullOrEmpty($config.ServerPath)) {
         $serverDetected = Get-InstalledGtnhVersion -InstancePath $config.ServerPath
-        if ($serverDetected -ne 'unknown') {
-            $detectedVersion = $serverDetected
-        }
+        if ($serverDetected -eq 'unknown') { $serverDetected = $null }
     }
-    if (-not $detectedVersion -and -not [string]::IsNullOrEmpty($config.ClientInstancePath)) {
+    if (-not [string]::IsNullOrEmpty($config.ClientInstancePath)) {
         $clientDetected = Get-InstalledGtnhVersion -InstancePath $config.ClientInstancePath
-        if ($clientDetected -ne 'unknown') {
-            $detectedVersion = $clientDetected
-        }
+        if ($clientDetected -eq 'unknown') { $clientDetected = $null }
     }
 
-    if ($detectedVersion) {
-        Write-Success "Detected installed version: $detectedVersion"
-        Write-Info "Press Enter to accept, or type a different version to override."
-        $currentVersion = Read-UserInput "Current GTNH version" -Default $detectedVersion
+    $hasServer = -not [string]::IsNullOrEmpty($config.ServerPath)
+    $hasClient = -not [string]::IsNullOrEmpty($config.ClientInstancePath)
+
+    if ($serverDetected -or $clientDetected) {
+        Write-Host ""
+        if ($serverDetected) {
+            Write-Success "Detected server version: $serverDetected"
+        }
+        if ($clientDetected) {
+            Write-Success "Detected client version: $clientDetected"
+        }
+
+        if ($serverDetected -and $clientDetected -and $serverDetected -ne $clientDetected) {
+            Write-Warn "Server and client are on different versions."
+        }
+
+        Write-Info "Press Enter to accept, or type a version to override."
+
+        if ($hasServer) {
+            $serverVersion = Read-UserInput "Server version" -Default ($serverDetected ?? '')
+            if ($serverVersion) {
+                $config.InstalledServerVersion = $serverVersion
+            }
+        }
+        if ($hasClient) {
+            $clientVersion = Read-UserInput "Client version" -Default ($clientDetected ?? '')
+            if ($clientVersion) {
+                $config.InstalledClientVersion = $clientVersion
+            }
+        }
+
+        if ($config.InstalledServerVersion -or $config.InstalledClientVersion) {
+            $parts = @()
+            if ($config.InstalledServerVersion) { $parts += "Server: $($config.InstalledServerVersion)" }
+            if ($config.InstalledClientVersion) { $parts += "Client: $($config.InstalledClientVersion)" }
+            Write-Success "Version set: $($parts -join ', ')"
+        }
     } else {
         Write-Info ""
         Write-Info "Current GTNH version (leave blank if unsure):"
@@ -360,20 +390,18 @@ function Invoke-InteractiveSetup {
         Write-Host " or " -NoNewline -ForegroundColor Gray
         Write-Host "2.8.0-beta-4" -ForegroundColor Cyan
         $currentVersion = Read-UserInput "Current GTNH version"
-    }
-    if ($currentVersion) {
-        if (-not [string]::IsNullOrEmpty($config.ServerPath)) {
-            $config.InstalledServerVersion = $currentVersion
+        if ($currentVersion) {
+            if ($hasServer) {
+                $config.InstalledServerVersion = $currentVersion
+            }
+            if ($hasClient) {
+                $config.InstalledClientVersion = $currentVersion
+            }
+            Write-Success "Version set to: $currentVersion"
         }
-        if (-not [string]::IsNullOrEmpty($config.ClientInstancePath)) {
-            $config.InstalledClientVersion = $currentVersion
-        }
-        Write-Success "Version set to: $currentVersion"
     }
 
     # Optional: Custom mods prompt
-    $hasServer = -not [string]::IsNullOrEmpty($config.ServerPath)
-    $hasClient = -not [string]::IsNullOrEmpty($config.ClientInstancePath)
     if ($hasServer -or $hasClient) {
         Write-Host ""
         Write-Info "If you have custom mods (not part of GTNH), you can add them now."

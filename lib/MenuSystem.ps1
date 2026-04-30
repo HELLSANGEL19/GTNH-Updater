@@ -444,9 +444,55 @@ function Invoke-UpdatePreferencesMenu {
                 Write-Info "Tell the updater what GTNH version you are currently running."
                 Write-Info "Server: $($Config.InstalledServerVersion ? $Config.InstalledServerVersion : '(unknown)')"
                 Write-Info "Client: $($Config.InstalledClientVersion ? $Config.InstalledClientVersion : '(unknown)')"
+
+                # Try auto-detection
+                $serverDetected = $null
+                $clientDetected = $null
+                if (-not [string]::IsNullOrEmpty($Config.ServerPath)) {
+                    $serverDetected = Get-InstalledGtnhVersion -InstancePath $Config.ServerPath
+                    if ($serverDetected -eq 'unknown') { $serverDetected = $null }
+                }
+                if (-not [string]::IsNullOrEmpty($Config.ClientInstancePath)) {
+                    $clientDetected = Get-InstalledGtnhVersion -InstancePath $Config.ClientInstancePath
+                    if ($clientDetected -eq 'unknown') { $clientDetected = $null }
+                }
+
+                if ($serverDetected -or $clientDetected) {
+                    Write-Host ""
+                    if ($serverDetected) {
+                        Write-Success "Detected server version: $serverDetected"
+                    }
+                    if ($clientDetected) {
+                        Write-Success "Detected client version: $clientDetected"
+                    }
+                    Write-Host ""
+                    Write-MenuOption "A" "Accept detected version(s)"
+                    Write-MenuOption "M" "Enter manually"
+                    Write-MenuOption "R" "Cancel"
+                    $detectChoice = Read-MenuChoice "Choose"
+
+                    if ($detectChoice -eq 'a' -or $detectChoice -eq 'A') {
+                        if ($serverDetected) {
+                            $Config.InstalledServerVersion = $serverDetected
+                        }
+                        if ($clientDetected) {
+                            $Config.InstalledClientVersion = $clientDetected
+                        }
+                        Save-Config -Config $Config
+                        Write-Success "Version(s) updated from auto-detection."
+                        Wait-ForKey
+                        continue
+                    }
+                    if ($detectChoice -eq 'r' -or $detectChoice -eq 'R') {
+                        Wait-ForKey
+                        continue
+                    }
+                    # Fall through to manual entry for 'M'
+                }
+
                 Write-Host ""
                 Write-Host '  Example: 2.8.4' -ForegroundColor Cyan
-                Write-Host '  Example: 2.7.2' -ForegroundColor Cyan
+                Write-Host '  Example: 2.8.0-beta-4' -ForegroundColor Cyan
                 $newVer = Read-UserInput "GTNH version"
                 if ($newVer -and $newVer -notmatch '^\d+\.\d+') {
                     Write-Warn "That doesn't look like a version number. Expected format: X.Y.Z"
@@ -1203,6 +1249,7 @@ function Invoke-VersionPicker {
             $r = $releases[$i]
             $num = "[$($i + 1)]".PadLeft(5)
             $typeLabel = $r.Type -eq 'Stable' ? '         ' : ' (beta)  '
+            $dateLabel = $r.Date ? "  $($r.Date)" : ''
 
             # Build the tag that appears after the version
             $tag = ''
@@ -1221,19 +1268,20 @@ function Invoke-VersionPicker {
             # Pick color based on type and position
             if ($r.Version -in $installedVersions) {
                 Write-Host "  $num $($r.Version)${typeLabel}" -NoNewline -ForegroundColor White
-                Write-Host "$tag" -ForegroundColor DarkGray
+                Write-Host "${dateLabel}${tag}" -ForegroundColor DarkGray
             }
             elseif ($i -eq 0) {
                 Write-Host "  $num $($r.Version)${typeLabel}" -NoNewline -ForegroundColor Green
+                Write-Host "${dateLabel}" -NoNewline -ForegroundColor DarkGray
                 Write-Host "$tag" -ForegroundColor DarkGreen
             }
             elseif ($r.Type -eq 'Beta') {
                 Write-Host "  $num $($r.Version)${typeLabel}" -NoNewline -ForegroundColor DarkYellow
-                if ($tag) { Write-Host "$tag" -ForegroundColor DarkGray } else { Write-Host "" }
+                Write-Host "${dateLabel}${tag}" -ForegroundColor DarkGray
             }
             else {
                 Write-Host "  $num $($r.Version)${typeLabel}" -NoNewline -ForegroundColor Cyan
-                if ($tag) { Write-Host "$tag" -ForegroundColor DarkGray } else { Write-Host "" }
+                Write-Host "${dateLabel}${tag}" -ForegroundColor DarkGray
             }
         }
 
