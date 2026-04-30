@@ -657,10 +657,10 @@ function Get-ScriptUpdateInfo {
     .SYNOPSIS
         Check if a newer version of the GTNH Updater script is available.
     .DESCRIPTION
-        Queries the configured GitHub repository for the latest release and
-        compares the tag with $script:UpdaterVersion. Strips pre-release
-        suffixes (e.g., -beta) for proper version comparison. Returns update
-        info or $null if up to date or on failure.
+        Queries the configured GitHub repository for the latest release.
+        If the release tag is different from $script:UpdaterVersion, an
+        update is available. Simple tag comparison - any new release with
+        a different tag triggers the update prompt.
     .OUTPUTS
         PSCustomObject with Version, DownloadUrl, ReleaseUrl, Body.
         Returns $null if up to date or on failure.
@@ -679,37 +679,8 @@ function Get-ScriptUpdateInfo {
     $latestTag = $release.tag_name -replace '^v', ''
     $currentVer = $script:UpdaterVersion
 
-    # Compare versions: strip pre-release suffixes for [version] comparison
-    $latestBase = $latestTag -replace '[-_].*', ''
-    $currentBase = $currentVer -replace '[-_].*', ''
-
-    $isNewer = $false
-    try {
-        $latestParsed = [version]$latestBase
-        $currentParsed = [version]$currentBase
-        if ($latestParsed -gt $currentParsed) {
-            $isNewer = $true
-        } elseif ($latestParsed -eq $currentParsed) {
-            # Same base version: release without suffix is newer than one with suffix
-            # e.g., 1.0.0 is newer than 1.0.0-beta
-            $latestHasSuffix = $latestTag -match '[-_]'
-            $currentHasSuffix = $currentVer -match '[-_]'
-            if ($currentHasSuffix -and -not $latestHasSuffix) {
-                $isNewer = $true
-            } elseif ($latestTag -ne $currentVer) {
-                # Different suffixes on same base, treat remote as newer
-                $isNewer = $true
-            }
-        }
-    }
-    catch {
-        # Version parsing failed entirely, fall back to string comparison
-        if ($latestTag -ne $currentVer) {
-            $isNewer = $true
-        }
-    }
-
-    if (-not $isNewer) {
+    # Simple check: if the tag is different from what we have, offer the update
+    if ($latestTag -eq $currentVer) {
         return $null  # Up to date
     }
 
@@ -724,6 +695,7 @@ function Get-ScriptUpdateInfo {
         Body        = $release.body
     }
 }
+
 
 
 function Get-LatestNightlyUpdater {
