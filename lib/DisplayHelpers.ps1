@@ -25,17 +25,21 @@ function Write-Banner {
         Display ASCII art banner for "GTNH Updater" at startup with version and beta tag.
     #>
     $ver = $script:UpdaterVersion ?? '?.?.?'
+    $updaterLine = "U P D A T E R   v$ver"
+    # Center the updater line under the 36-char-wide border
+    $padLeft = [math]::Max(0, [math]::Floor((36 - $updaterLine.Length) / 2))
+    $centeredUpdater = (' ' * $padLeft) + $updaterLine
     $banner = @"
 
-  ═══════════════════════════════════════
+  ════════════════════════════════════
    ██████╗ ████████╗███╗   ██╗██╗  ██╗
   ██╔════╝ ╚══██╔══╝████╗  ██║██║  ██║
   ██║  ███╗   ██║   ██╔██╗ ██║███████║
   ██║   ██║   ██║   ██║╚██╗██║██╔══██║
   ╚██████╔╝   ██║   ██║ ╚████║██║  ██║
    ╚═════╝    ╚═╝   ╚═╝  ╚═══╝╚═╝  ╚═╝
-        U P D A T E R   v$ver
-  ═══════════════════════════════════════
+  $centeredUpdater
+  ════════════════════════════════════
 
 "@
     Write-Host $banner -ForegroundColor Cyan
