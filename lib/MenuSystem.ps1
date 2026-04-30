@@ -82,10 +82,11 @@ function Show-MainMenu {
 
     Write-Host ""
     Write-Host "  Latest stable:  " -NoNewline -ForegroundColor Gray
-    Write-Host "$latestStable" -ForegroundColor Cyan
+    Write-Host "$latestStable" -NoNewline -ForegroundColor Cyan
     if ($isStableChannel -and $script:CachedLatestBeta) {
-        Write-Host "  Latest beta:    " -NoNewline -ForegroundColor Gray
-        Write-Host "$($script:CachedLatestBeta)" -ForegroundColor DarkYellow
+        Write-Host "  |  Beta: $($script:CachedLatestBeta)" -ForegroundColor DarkYellow
+    } else {
+        Write-Host ""
     }
     if (-not $isStableChannel -and $script:CachedLatestNightly) {
         Write-Host "  Latest daily:   " -NoNewline -ForegroundColor Gray
@@ -114,6 +115,7 @@ function Show-MainMenu {
     }
 
     # Show configured paths (abbreviated to last 2 folder segments)
+    # Only show if one target is not configured (helps user notice)
     $abbreviatePath = {
         param($p)
         if (-not $p) { return '(not set)' }
@@ -121,15 +123,16 @@ function Show-MainMenu {
         if ($parts.Count -ge 2) { return "...\$($parts[-2])\$($parts[-1])" }
         return $p
     }
-    if ($Config.ServerPath -or $Config.ClientInstancePath) {
-        Write-Host ""
-        if ($Config.ServerPath) {
-            Write-Host "  Server path:    " -NoNewline -ForegroundColor DarkGray
-            Write-Host "$(& $abbreviatePath $Config.ServerPath)" -ForegroundColor DarkGray
+    $hasServer = -not [string]::IsNullOrEmpty($Config.ServerPath)
+    $hasClient = -not [string]::IsNullOrEmpty($Config.ClientInstancePath)
+    if (-not $hasServer -or -not $hasClient) {
+        if (-not $hasServer) {
+            Write-Host "  Server:         " -NoNewline -ForegroundColor DarkGray
+            Write-Host "(not configured)" -ForegroundColor DarkGray
         }
-        if ($Config.ClientInstancePath) {
-            Write-Host "  Client path:    " -NoNewline -ForegroundColor DarkGray
-            Write-Host "$(& $abbreviatePath $Config.ClientInstancePath)" -ForegroundColor DarkGray
+        if (-not $hasClient) {
+            Write-Host "  Client:         " -NoNewline -ForegroundColor DarkGray
+            Write-Host "(not configured)" -ForegroundColor DarkGray
         }
     }
 
@@ -1616,8 +1619,6 @@ function Invoke-MainLoop {
         # Clear screen and show loading message
         Clear-Host
         Write-Banner
-        Write-Info "Starting up..."
-        Write-Host ""
 
         # Initialize logging first
         Initialize-Logging
@@ -1714,26 +1715,30 @@ function Invoke-MainLoop {
 
         # ── Startup validation: check paths and detect versions ───────────────
         $configChanged = $false
+        $pathWarnings = $false
 
         # Validate configured paths still exist
         if (-not [string]::IsNullOrEmpty($config.ServerPath) -and -not (Test-Path -LiteralPath $config.ServerPath)) {
             Write-Warn "Server path no longer exists: $($config.ServerPath)"
-            Write-Info "Update the path in Settings > Instance Paths, or re-run the setup wizard."
-            Write-Host ""
+            Write-Info "Update it in Settings > Instance Paths."
+            $pathWarnings = $true
         }
         if (-not [string]::IsNullOrEmpty($config.ClientInstancePath) -and -not (Test-Path -LiteralPath $config.ClientInstancePath)) {
             Write-Warn "Client path no longer exists: $($config.ClientInstancePath)"
-            Write-Info "Update the path in Settings > Instance Paths, or re-run the setup wizard."
+            Write-Info "Update it in Settings > Instance Paths."
+            $pathWarnings = $true
+        }
+        if ($pathWarnings) {
             Write-Host ""
+            Wait-ForKey
         }
 
-        # Auto-detect installed version if unknown
+        # Auto-detect installed version if unknown (silent, no output)
         if ([string]::IsNullOrEmpty($config.InstalledServerVersion) -and -not [string]::IsNullOrEmpty($config.ServerPath) -and (Test-Path -LiteralPath $config.ServerPath)) {
             $detected = Get-InstalledGtnhVersion -InstancePath $config.ServerPath
             if ($detected -ne 'unknown') {
                 $config.InstalledServerVersion = $detected
                 $configChanged = $true
-                Write-Info "Auto-detected server version: $detected"
             }
         }
         if ([string]::IsNullOrEmpty($config.InstalledClientVersion) -and -not [string]::IsNullOrEmpty($config.ClientInstancePath) -and (Test-Path -LiteralPath $config.ClientInstancePath)) {
@@ -1741,7 +1746,6 @@ function Invoke-MainLoop {
             if ($detected -ne 'unknown') {
                 $config.InstalledClientVersion = $detected
                 $configChanged = $true
-                Write-Info "Auto-detected client version: $detected"
             }
         }
 
@@ -1756,7 +1760,6 @@ function Invoke-MainLoop {
         $autoCheck = $config.AutoCheckUpdates ?? $true
         $isStable = ($config.DefaultChannel ?? 'stable') -eq 'stable'
         if ($autoCheck) {
-            Write-Info "Checking for latest versions..."
             try {
                 $websiteReleases = Get-WebsiteReleases -PackType ($config.JavaVersion ?? 'java17')
                 if ($websiteReleases -and $websiteReleases.Count -gt 0) {
@@ -1795,7 +1798,6 @@ function Invoke-MainLoop {
 
             # For nightly users, also check the latest nightly build from GitHub
             if (-not $isStable) {
-                Write-Info "Checking for latest daily build..."
                 try {
                     $nightlyReleases = Invoke-GitHubApi -Uri 'https://api.github.com/repos/GTNewHorizons/GT-New-Horizons-Modpack/releases?per_page=1'
                     if ($nightlyReleases -and $nightlyReleases.Count -gt 0) {
@@ -1808,35 +1810,8 @@ function Invoke-MainLoop {
                 }
             }
 
-            # Show one-liner based on channel
-            if ($isStable) {
-                $serverBehind = $config.InstalledServerVersion -and $script:CachedLatestVersion -and $config.InstalledServerVersion -ne $script:CachedLatestVersion
-                $clientBehind = $config.InstalledClientVersion -and $script:CachedLatestVersion -and $config.InstalledClientVersion -ne $script:CachedLatestVersion
-                if ($serverBehind -or $clientBehind) {
-                    Write-Host ""
-                    Write-Host "  ★ Stable update available: " -NoNewline -ForegroundColor Yellow
-                    Write-Host "$($script:CachedLatestVersion)" -ForegroundColor Cyan
-                    if ($script:CachedLatestBeta) {
-                        Write-Host "    Beta also available:     $($script:CachedLatestBeta)" -ForegroundColor DarkYellow
-                    }
-                    Write-Host ""
-                } elseif ($script:CachedLatestBeta) {
-                    Write-Host ""
-                    Write-Host "  ★ Beta available: " -NoNewline -ForegroundColor DarkYellow
-                    Write-Host "$($script:CachedLatestBeta)" -ForegroundColor Cyan
-                    Write-Host ""
-                }
-            } else {
-                if ($script:CachedLatestNightly) {
-                    Write-Host ""
-                    Write-Host "  ★ Latest daily: " -NoNewline -ForegroundColor Magenta
-                    Write-Host "$($script:CachedLatestNightly)" -ForegroundColor Cyan
-                    if ($script:CachedLatestVersion) {
-                        Write-Host "    Latest stable:  $($script:CachedLatestVersion)" -ForegroundColor Gray
-                    }
-                    Write-Host ""
-                }
-            }
+            # Version info is shown on the main menu, no need for a one-liner here
+            # (the main menu shows "-> X.Y.Z available" next to the version)
         }
 
         # Check for script self-update
@@ -1936,7 +1911,6 @@ function Invoke-MainLoop {
                     $autoCheckNow = $config.AutoCheckUpdates ?? $true
                     if ($autoCheckNow) {
                         if (-not $script:CachedLatestVersion) {
-                            Write-Info "Checking for latest versions..."
                             try {
                                 $websiteReleases = Get-WebsiteReleases -PackType ($config.JavaVersion ?? 'java17')
                                 if ($websiteReleases -and $websiteReleases.Count -gt 0) {
@@ -1960,7 +1934,6 @@ function Invoke-MainLoop {
                         }
                         $currentChannel = $config.DefaultChannel ?? 'stable'
                         if ($currentChannel -ne 'stable' -and -not $script:CachedLatestNightly) {
-                            Write-Info "Checking for latest daily build..."
                             try {
                                 $nightlyReleases = Invoke-GitHubApi -Uri 'https://api.github.com/repos/GTNewHorizons/GT-New-Horizons-Modpack/releases?per_page=1'
                                 if ($nightlyReleases -and $nightlyReleases.Count -gt 0) {
