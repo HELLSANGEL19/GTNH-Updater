@@ -40,6 +40,7 @@ function Get-ClientPreservationList {
         'options.txt'
         'servers.dat'
         'optionsof.txt'
+        'optionsnf.txt'
         'resourcepacks'
     )
 }
