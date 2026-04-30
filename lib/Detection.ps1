@@ -10,7 +10,8 @@
 #   Find-PrismInstances      - Scan %APPDATA%/PrismLauncher/instances/ for
 #                               GTNH client instances
 #   Test-IsGtnhInstance      - Check if a mods/ folder contains GregTech/GT5 JARs
-#   Get-InstalledGtnhVersion - Read version from gtnh_version.txt or return 'unknown'
+#   Get-InstalledGtnhVersion - Detect version from gtnh_version.txt or
+#                               changelog filenames, return 'unknown' if not found
 #
 # All registry and file system access is wrapped in try/catch blocks.
 # ============================================================================
@@ -170,7 +171,14 @@ function Test-IsGtnhInstance {
 function Get-InstalledGtnhVersion {
     <#
     .SYNOPSIS
-        Read the installed GTNH version from gtnh_version.txt in the instance.
+        Detect the installed GTNH version from instance files.
+    .DESCRIPTION
+        Tries multiple detection methods in order:
+          1. gtnh_version.txt - Written by the nightly updater JAR
+          2. Changelog filenames - Pack zips include files like
+             "changelog from 2.7.3 to 2.7.4.txt"; the highest "to" version
+             across all changelog files is the installed version
+        Returns 'unknown' if no version can be determined.
     .PARAMETER InstancePath
         Path to the instance root directory.
     .OUTPUTS
@@ -180,6 +188,7 @@ function Get-InstalledGtnhVersion {
         [Parameter(Mandatory)][string]$InstancePath
     )
 
+    # Method 1: gtnh_version.txt (written by the nightly updater JAR)
     $versionFile = Join-Path $InstancePath 'gtnh_version.txt'
     if (Test-Path -LiteralPath $versionFile) {
         try {
@@ -189,8 +198,40 @@ function Get-InstalledGtnhVersion {
             }
         }
         catch {
-            # Fall through to return unknown
+            # Fall through to next method
         }
+    }
+
+    # Method 2: Changelog filenames
+    # Pack zips include files like "changelog from 2.7.3 to 2.7.4.txt"
+    # or "changelog from 2.8.0-beta-1 to 2.8.0-beta-2.txt"
+    # The highest "to" version is the installed version.
+    try {
+        $changelogFiles = Get-ChildItem -LiteralPath $InstancePath -Filter 'changelog from *' -File -ErrorAction SilentlyContinue
+        if ($changelogFiles -and $changelogFiles.Count -gt 0) {
+            $toVersions = @()
+            foreach ($file in $changelogFiles) {
+                if ($file.Name -match 'changelog from .+ to (\d+\.\d+\.\d+(?:[-_](?:beta|rc)[-_]?\d*)?)') {
+                    $toVersions += $Matches[1]
+                }
+            }
+
+            if ($toVersions.Count -gt 0) {
+                # Sort: highest base version first, then stable before beta for same base
+                $sorted = $toVersions | Sort-Object {
+                    $base = '0.0.0'
+                    if ($_ -match '^(\d+\.\d+\.\d+)') { $base = $Matches[1] }
+                    [version]$base
+                }, {
+                    # Stable (no suffix) sorts after beta so it ends up first in descending
+                    if ($_ -match '[-_](beta|rc)') { 0 } else { 1 }
+                }, { $_ } -Descending
+                return $sorted[0]
+            }
+        }
+    }
+    catch {
+        # Fall through to return unknown
     }
 
     return 'unknown'

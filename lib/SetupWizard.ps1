@@ -333,14 +333,34 @@ function Invoke-InteractiveSetup {
     }
     Write-Success "Server pack type: $($config.JavaVersion)"
 
-    # Current installed version
-    Write-Info ""
-    Write-Info "Current GTNH version (leave blank if unsure):"
-    Write-Host "  Examples: " -NoNewline -ForegroundColor Gray
-    Write-Host "2.8.4" -NoNewline -ForegroundColor Cyan
-    Write-Host " or " -NoNewline -ForegroundColor Gray
-    Write-Host "2.8.4.1-pre" -ForegroundColor Cyan
-    $currentVersion = Read-UserInput "Current GTNH version"
+    # Current installed version - try to auto-detect first
+    $detectedVersion = $null
+    if (-not [string]::IsNullOrEmpty($config.ServerPath)) {
+        $serverDetected = Get-InstalledGtnhVersion -InstancePath $config.ServerPath
+        if ($serverDetected -ne 'unknown') {
+            $detectedVersion = $serverDetected
+        }
+    }
+    if (-not $detectedVersion -and -not [string]::IsNullOrEmpty($config.ClientInstancePath)) {
+        $clientDetected = Get-InstalledGtnhVersion -InstancePath $config.ClientInstancePath
+        if ($clientDetected -ne 'unknown') {
+            $detectedVersion = $clientDetected
+        }
+    }
+
+    if ($detectedVersion) {
+        Write-Success "Detected installed version: $detectedVersion"
+        Write-Info "Press Enter to accept, or type a different version to override."
+        $currentVersion = Read-UserInput "Current GTNH version" -Default $detectedVersion
+    } else {
+        Write-Info ""
+        Write-Info "Current GTNH version (leave blank if unsure):"
+        Write-Host "  Examples: " -NoNewline -ForegroundColor Gray
+        Write-Host "2.8.4" -NoNewline -ForegroundColor Cyan
+        Write-Host " or " -NoNewline -ForegroundColor Gray
+        Write-Host "2.8.0-beta-4" -ForegroundColor Cyan
+        $currentVersion = Read-UserInput "Current GTNH version"
+    }
     if ($currentVersion) {
         if (-not [string]::IsNullOrEmpty($config.ServerPath)) {
             $config.InstalledServerVersion = $currentVersion
