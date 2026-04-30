@@ -113,6 +113,26 @@ function Show-MainMenu {
         Write-Host ($summaryParts -join '  |  ') -ForegroundColor DarkCyan
     }
 
+    # Show configured paths (abbreviated to last 2 folder segments)
+    $abbreviatePath = {
+        param($p)
+        if (-not $p) { return '(not set)' }
+        $parts = $p -split '[/\\]' | Where-Object { $_ -ne '' }
+        if ($parts.Count -ge 2) { return "...\$($parts[-2])\$($parts[-1])" }
+        return $p
+    }
+    if ($Config.ServerPath -or $Config.ClientInstancePath) {
+        Write-Host ""
+        if ($Config.ServerPath) {
+            Write-Host "  Server path:    " -NoNewline -ForegroundColor DarkGray
+            Write-Host "$(& $abbreviatePath $Config.ServerPath)" -ForegroundColor DarkGray
+        }
+        if ($Config.ClientInstancePath) {
+            Write-Host "  Client path:    " -NoNewline -ForegroundColor DarkGray
+            Write-Host "$(& $abbreviatePath $Config.ClientInstancePath)" -ForegroundColor DarkGray
+        }
+    }
+
     # Version mismatch warning
     Show-VersionMismatchWarning -Config $Config
 
@@ -1691,6 +1711,43 @@ function Invoke-MainLoop {
             $config.LastSeenScriptVersion = $script:UpdaterVersion
         }
         Save-Config -Config $config
+
+        # ── Startup validation: check paths and detect versions ───────────────
+        $configChanged = $false
+
+        # Validate configured paths still exist
+        if (-not [string]::IsNullOrEmpty($config.ServerPath) -and -not (Test-Path -LiteralPath $config.ServerPath)) {
+            Write-Warn "Server path no longer exists: $($config.ServerPath)"
+            Write-Info "Update the path in Settings > Instance Paths, or re-run the setup wizard."
+            Write-Host ""
+        }
+        if (-not [string]::IsNullOrEmpty($config.ClientInstancePath) -and -not (Test-Path -LiteralPath $config.ClientInstancePath)) {
+            Write-Warn "Client path no longer exists: $($config.ClientInstancePath)"
+            Write-Info "Update the path in Settings > Instance Paths, or re-run the setup wizard."
+            Write-Host ""
+        }
+
+        # Auto-detect installed version if unknown
+        if ([string]::IsNullOrEmpty($config.InstalledServerVersion) -and -not [string]::IsNullOrEmpty($config.ServerPath) -and (Test-Path -LiteralPath $config.ServerPath)) {
+            $detected = Get-InstalledGtnhVersion -InstancePath $config.ServerPath
+            if ($detected -ne 'unknown') {
+                $config.InstalledServerVersion = $detected
+                $configChanged = $true
+                Write-Info "Auto-detected server version: $detected"
+            }
+        }
+        if ([string]::IsNullOrEmpty($config.InstalledClientVersion) -and -not [string]::IsNullOrEmpty($config.ClientInstancePath) -and (Test-Path -LiteralPath $config.ClientInstancePath)) {
+            $detected = Get-InstalledGtnhVersion -InstancePath $config.ClientInstancePath
+            if ($detected -ne 'unknown') {
+                $config.InstalledClientVersion = $detected
+                $configChanged = $true
+                Write-Info "Auto-detected client version: $detected"
+            }
+        }
+
+        if ($configChanged) {
+            Save-Config -Config $config
+        }
 
         # Auto-check for latest version (cached for the session)
         $script:CachedLatestVersion = $null
