@@ -34,19 +34,20 @@ cd "C:\path\to\GTNHUpdater"
 
 When you select **Update GTNH** with the Stable channel:
 
-1. Asks which target (Server, Client, or Both)
-2. Downloads the latest pack (with progress bar and speed display) and verifies integrity
-3. Extracts to a staging folder for preview
-4. Shows a full color-coded mod comparison:
+1. Shows a **version picker** listing all available releases (stable and beta/RC), newest first
+2. Asks which target (Server, Client, or Both)
+3. Downloads the selected pack (with progress bar and speed display) and verifies integrity
+4. Extracts to a staging folder for preview
+5. Shows a full color-coded mod comparison:
    - Green: new mods added to the pack
    - Red: mods removed (with option to mark as custom)
    - Yellow: mods with version updates
    - Cyan: your custom mods that will be preserved
-5. Lets you search mods by name if the list is long
-6. Shows what folders will be deleted
-7. Reminds you to back up before applying
-8. Lets you choose: **Apply**, **Open staging folder in Explorer**, or **Cancel**
-9. If you apply: saves a rollback snapshot, preserves your files, replaces the pack, restores your files, applies config patches, and verifies the result
+6. Lets you search mods by name if the list is long
+7. Shows what folders will be deleted
+8. Reminds you to back up before applying
+9. Lets you choose: **Apply**, **Open staging folder in Explorer**, or **Cancel**
+10. If you apply: saves a rollback snapshot, preserves your files, replaces the pack, restores your files, applies config patches, and verifies the result
 
 You always see what will happen before anything is changed.
 
@@ -71,9 +72,11 @@ If something goes wrong mid-update, the tool offers automatic rollback for both 
 
 | Channel      | What it is                                              |
 |--------------|---------------------------------------------------------|
-| Stable       | Official releases from gtnewhorizons.com. Recommended.  |
+| Stable       | Official releases from gtnewhorizons.com. Recommended. The version picker also lists beta/RC builds. |
 | Daily        | Dev builds from GitHub. Updated daily. Requires Java 21+. |
 | Experimental | Bleeding-edge builds from GitHub. May be unstable. Requires Java 21+. |
+
+GTNH's release cycle is: Daily -> Experimental -> Beta -> Stable. When you pick "Update GTNH" on the Stable channel, the version picker shows both stable and beta/RC releases from the [version history page](https://www.gtnewhorizons.com/version-history). No channel switching needed to install a beta.
 
 Daily and Experimental channels use the official [gtnh-nightly-updater](https://github.com/GTNewHorizons/gtnh-nightly-updater) JAR, which downloads individual mods from the GTNH Maven. No Java 21+ is needed for stable updates.
 

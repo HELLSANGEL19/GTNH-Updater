@@ -22,7 +22,7 @@ function Add-UpdateHistoryEntry {
     .PARAMETER Version
         The version that was installed.
     .PARAMETER Channel
-        The channel used: 'stable', 'daily', or 'experimental'.
+        The channel used: 'stable', 'beta', 'daily', or 'experimental'.
     .PARAMETER Target
         What was updated: 'server' or 'client'.
     #>

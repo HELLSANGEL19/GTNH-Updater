@@ -17,6 +17,8 @@
 #   Invoke-ViewLogs          - List recent log files, offer to open folder
 #   Invoke-ChangelogViewer   - Fetch and display GTNH changelog from GitHub
 #   Invoke-ScriptUpdateCheck - Check for newer script version on GitHub
+#   Invoke-VersionPicker     - Show version picker from pre-fetched releases
+#                               (stable + beta/RC) for user selection
 #   Invoke-UpdateHistory     - Display update history from config
 #   Invoke-MainLoop          - Top-level loop: init logging -> load/validate
 #                               config -> setup wizard if needed -> menu loop ->
@@ -81,6 +83,10 @@ function Show-MainMenu {
     Write-Host ""
     Write-Host "  Latest stable:  " -NoNewline -ForegroundColor Gray
     Write-Host "$latestStable" -ForegroundColor Cyan
+    if ($isStableChannel -and $script:CachedLatestBeta) {
+        Write-Host "  Latest beta:    " -NoNewline -ForegroundColor Gray
+        Write-Host "$($script:CachedLatestBeta)" -ForegroundColor DarkYellow
+    }
     if (-not $isStableChannel -and $script:CachedLatestNightly) {
         Write-Host "  Latest daily:   " -NoNewline -ForegroundColor Gray
         Write-Host "$($script:CachedLatestNightly)" -ForegroundColor Magenta
@@ -1142,6 +1148,143 @@ function Invoke-ScriptUpdateCheck {
     }
 }
 
+function Invoke-VersionPicker {
+    <#
+    .SYNOPSIS
+        Show a version picker listing all website releases (stable + beta/RC).
+    .DESCRIPTION
+        Presents a numbered list of all available releases. The latest release
+        is pre-selected as the default. Users can pick a beta/RC version without
+        changing their channel. Returns the selected release object, or $null
+        if cancelled.
+    .PARAMETER Config
+        The config PSCustomObject.
+    .PARAMETER Releases
+        Array of release objects from Get-WebsiteReleases.
+    .OUTPUTS
+        PSCustomObject with Version, Type, ServerZipUrl, ServerZipName,
+        ClientZipUrl, ClientZipName, ReleaseUrl. Returns $null if cancelled.
+    #>
+    param(
+        [Parameter(Mandatory)][PSCustomObject]$Config,
+        [Parameter(Mandatory)][array]$Releases
+    )
+
+    Write-Header "Select Version"
+
+    $releases = $Releases
+
+    # Find the installed versions and latest stable for markers
+    $serverVer = $Config.InstalledServerVersion
+    $clientVer = $Config.InstalledClientVersion
+    $installedVersions = @()
+    if ($serverVer) { $installedVersions += $serverVer }
+    if ($clientVer -and $clientVer -ne $serverVer) { $installedVersions += $clientVer }
+
+    $latestStableIdx = -1
+    for ($si = 0; $si -lt $releases.Count; $si++) {
+        if ($releases[$si].Type -eq 'Stable') { $latestStableIdx = $si; break }
+    }
+
+    # Show the list (page 1 = recent, which is what most people want)
+    $pageSize = 15
+    $page = 0
+    $totalPages = [math]::Max(1, [math]::Ceiling($releases.Count / $pageSize))
+
+    while ($true) {
+        $startIdx = $page * $pageSize
+        $endIdx = [math]::Min($startIdx + $pageSize, $releases.Count) - 1
+
+        Write-Host ""
+        Write-Host "  Available releases (newest first):" -ForegroundColor White
+        Write-Host ""
+
+        for ($i = $startIdx; $i -le $endIdx; $i++) {
+            $r = $releases[$i]
+            $num = "[$($i + 1)]".PadLeft(5)
+            $typeLabel = $r.Type -eq 'Stable' ? '         ' : ' (beta)  '
+
+            # Build the tag that appears after the version
+            $tag = ''
+            if ($r.Version -in $installedVersions) { $tag += ' (installed)' }
+            if ($i -eq 0 -and $latestStableIdx -ne 0) {
+                # Newest overall is a beta, mark it
+                $tag += ' <-- newest'
+            }
+            elseif ($i -eq 0) {
+                $tag += ' <-- latest'
+            }
+            if ($i -eq $latestStableIdx -and $latestStableIdx -ne 0) {
+                $tag += ' <-- latest stable'
+            }
+
+            # Pick color based on type and position
+            if ($r.Version -in $installedVersions) {
+                Write-Host "  $num $($r.Version)${typeLabel}" -NoNewline -ForegroundColor White
+                Write-Host "$tag" -ForegroundColor DarkGray
+            }
+            elseif ($i -eq 0) {
+                Write-Host "  $num $($r.Version)${typeLabel}" -NoNewline -ForegroundColor Green
+                Write-Host "$tag" -ForegroundColor DarkGreen
+            }
+            elseif ($r.Type -eq 'Beta') {
+                Write-Host "  $num $($r.Version)${typeLabel}" -NoNewline -ForegroundColor DarkYellow
+                if ($tag) { Write-Host "$tag" -ForegroundColor DarkGray } else { Write-Host "" }
+            }
+            else {
+                Write-Host "  $num $($r.Version)${typeLabel}" -NoNewline -ForegroundColor Cyan
+                if ($tag) { Write-Host "$tag" -ForegroundColor DarkGray } else { Write-Host "" }
+            }
+        }
+
+        Write-Host ""
+        if ($totalPages -gt 1) {
+            Write-Host "  Page $($page + 1) of $totalPages" -ForegroundColor DarkGray
+        }
+
+        # Options
+        if ($totalPages -gt 1 -and $page -lt $totalPages - 1) {
+            Write-MenuOption "N" "Next page"
+        }
+        if ($page -gt 0) {
+            Write-MenuOption "P" "Previous page"
+        }
+        $defaultLabel = $releases[0].Version
+        if ($latestStableIdx -eq 0) {
+            Write-MenuOption "Enter" "Latest stable ($defaultLabel)"
+        } else {
+            Write-MenuOption "Enter" "Newest ($defaultLabel)"
+        }
+        Write-MenuOption "R" "Return to main menu"
+
+        $choice = Read-MenuChoice "Enter number or option"
+
+        if ($choice -eq '' -or $choice -eq $null) {
+            # Default: latest release
+            return $releases[0]
+        }
+        if ($choice -eq 'r' -or $choice -eq 'R') {
+            return $null
+        }
+        if ($choice -eq 'n' -or $choice -eq 'N') {
+            if ($page -lt $totalPages - 1) { $page++ }
+            continue
+        }
+        if ($choice -eq 'p' -or $choice -eq 'P') {
+            if ($page -gt 0) { $page-- }
+            continue
+        }
+
+        # Try to parse as a number
+        $idx = 0
+        if ([int]::TryParse($choice, [ref]$idx) -and $idx -ge 1 -and $idx -le $releases.Count) {
+            return $releases[$idx - 1]
+        }
+
+        Write-Warn "Invalid selection. Enter a number (1-$($releases.Count)), N/P, or R."
+    }
+}
+
 function Invoke-UpdateHistory {
     <#
     .SYNOPSIS
@@ -1178,6 +1321,7 @@ function Invoke-UpdateHistory {
 
         $channelColor = switch ($entry.Channel) {
             'stable'       { 'Cyan' }
+            'beta'         { 'DarkYellow' }
             'daily'        { 'Magenta' }
             'experimental' { 'DarkMagenta' }
             default        { 'Gray' }
@@ -1211,7 +1355,8 @@ function Show-HelpScreen {
     Write-Host "  " -NoNewline
     Write-Host "Update GTNH" -ForegroundColor Cyan
     Write-Host "  Updates your server and/or client using your default channel." -ForegroundColor Gray
-    Write-Host "  Stable: downloads a full pack zip with preview before applying." -ForegroundColor Gray
+    Write-Host "  Stable: shows a version picker with all releases (stable + beta)," -ForegroundColor Gray
+    Write-Host "  then downloads a full pack zip with preview before applying." -ForegroundColor Gray
     Write-Host "  Daily/Experimental: uses the GTNH updater JAR (needs Java 21+)." -ForegroundColor Gray
     Write-Host ""
 
@@ -1363,20 +1508,46 @@ function Invoke-MainLoop {
 
         # Auto-check for latest version (cached for the session)
         $script:CachedLatestVersion = $null
+        $script:CachedLatestBeta = $null
         $script:CachedLatestNightly = $null
         $autoCheck = $config.AutoCheckUpdates ?? $true
         $isStable = ($config.DefaultChannel ?? 'stable') -eq 'stable'
         if ($autoCheck) {
-            Write-Info "Checking for latest stable version..."
+            Write-Info "Checking for latest versions..."
             try {
-                $latestRelease = Get-LatestStableRelease
-                if ($latestRelease) {
-                    $script:CachedLatestVersion = $latestRelease.Version
-                    Write-Log "[MAIN] Latest stable version: $($script:CachedLatestVersion)"
+                $websiteReleases = Get-WebsiteReleases -PackType ($config.JavaVersion ?? 'java17')
+                if ($websiteReleases -and $websiteReleases.Count -gt 0) {
+                    # Latest stable = first entry with Type 'Stable'
+                    $latestStableEntry = $websiteReleases | Where-Object { $_.Type -eq 'Stable' } | Select-Object -First 1
+                    if ($latestStableEntry) {
+                        $script:CachedLatestVersion = $latestStableEntry.Version
+                        Write-Log "[MAIN] Latest stable version: $($script:CachedLatestVersion)"
+                    }
+                    # Latest beta = first entry with Type 'Beta' (only if it's newer than latest stable)
+                    $latestBetaEntry = $websiteReleases | Where-Object { $_.Type -eq 'Beta' } | Select-Object -First 1
+                    if ($latestBetaEntry) {
+                        # Only show beta if it appears before (newer than) the latest stable on the page
+                        $betaIdx = [array]::IndexOf($websiteReleases, $latestBetaEntry)
+                        $stableIdx = if ($latestStableEntry) { [array]::IndexOf($websiteReleases, $latestStableEntry) } else { $websiteReleases.Count }
+                        if ($betaIdx -lt $stableIdx) {
+                            $script:CachedLatestBeta = $latestBetaEntry.Version
+                            Write-Log "[MAIN] Latest beta: $($script:CachedLatestBeta)"
+                        }
+                    }
                 }
             }
             catch {
-                Write-Log "[WARN] Stable version check failed: $($_.Exception.Message)"
+                Write-Log "[WARN] Version check failed: $($_.Exception.Message)"
+                # Fallback to the original stable-only check
+                try {
+                    $latestRelease = Get-LatestStableRelease
+                    if ($latestRelease) {
+                        $script:CachedLatestVersion = $latestRelease.Version
+                    }
+                }
+                catch {
+                    Write-Log "[WARN] Stable version fallback also failed: $($_.Exception.Message)"
+                }
             }
 
             # For nightly users, also check the latest nightly build from GitHub
@@ -1402,6 +1573,14 @@ function Invoke-MainLoop {
                     Write-Host ""
                     Write-Host "  ★ Stable update available: " -NoNewline -ForegroundColor Yellow
                     Write-Host "$($script:CachedLatestVersion)" -ForegroundColor Cyan
+                    if ($script:CachedLatestBeta) {
+                        Write-Host "    Beta also available:     $($script:CachedLatestBeta)" -ForegroundColor DarkYellow
+                    }
+                    Write-Host ""
+                } elseif ($script:CachedLatestBeta) {
+                    Write-Host ""
+                    Write-Host "  ★ Beta available: " -NoNewline -ForegroundColor DarkYellow
+                    Write-Host "$($script:CachedLatestBeta)" -ForegroundColor Cyan
                     Write-Host ""
                 }
             } else {
@@ -1431,13 +1610,28 @@ function Invoke-MainLoop {
                     # Update GTNH - use default channel
                     $channel = $config.DefaultChannel ?? 'stable'
 
-                    $targets = Invoke-TargetSelection -Config $config
-                    if (-not $targets.Server -and -not $targets.Client) { break }
-
-                    # Perform updates for confirmed targets
                     if ($channel -eq 'stable') {
+                        # Fetch all website releases for version picker and downgrade detection
+                        Write-Info "Fetching available releases..."
+                        $allReleases = Get-WebsiteReleases -PackType ($config.JavaVersion ?? 'java17')
+                        if (-not $allReleases -or $allReleases.Count -eq 0) {
+                            Write-Err "Could not fetch releases. Check your internet connection."
+                            Wait-ForKey
+                            break
+                        }
+
+                        # Show version picker first (stable + beta/RC releases)
+                        $selectedRelease = Invoke-VersionPicker -Config $config -Releases $allReleases
+                        if (-not $selectedRelease) { break }
+
+                        $targets = Invoke-TargetSelection -Config $config
+                        if (-not $targets.Server -and -not $targets.Client) { break }
+
+                        # Determine channel label for history
+                        $channelLabel = $selectedRelease.Type -eq 'Beta' ? 'beta' : 'stable'
+
                         if ($targets.Server) {
-                            Invoke-StableUpdate -Config $config -Target 'server'
+                            Invoke-StableUpdate -Config $config -Target 'server' -Release $selectedRelease -ChannelLabel $channelLabel -WebsiteReleases $allReleases
                         }
                         if ($targets.Server -and $targets.Client) {
                             Write-Host ""
@@ -1447,10 +1641,13 @@ function Invoke-MainLoop {
                             }
                         }
                         if ($targets.Client) {
-                            Invoke-StableUpdate -Config $config -Target 'client'
+                            Invoke-StableUpdate -Config $config -Target 'client' -Release $selectedRelease -ChannelLabel $channelLabel -WebsiteReleases $allReleases
                         }
                     }
                     else {
+                        $targets = Invoke-TargetSelection -Config $config
+                        if (-not $targets.Server -and -not $targets.Client) { break }
+
                         if ($targets.Server) {
                             Invoke-NightlyUpdate -Config $config -Target 'server' -Channel $channel
                         }
@@ -1496,16 +1693,26 @@ function Invoke-MainLoop {
                     $autoCheckNow = $config.AutoCheckUpdates ?? $true
                     if ($autoCheckNow) {
                         if (-not $script:CachedLatestVersion) {
-                            Write-Info "Checking for latest stable version..."
+                            Write-Info "Checking for latest versions..."
                             try {
-                                $latestRelease = Get-LatestStableRelease
-                                if ($latestRelease) {
-                                    $script:CachedLatestVersion = $latestRelease.Version
-                                    Write-Log "[MAIN] Latest stable version: $($script:CachedLatestVersion)"
+                                $websiteReleases = Get-WebsiteReleases -PackType ($config.JavaVersion ?? 'java17')
+                                if ($websiteReleases -and $websiteReleases.Count -gt 0) {
+                                    $latestStableEntry = $websiteReleases | Where-Object { $_.Type -eq 'Stable' } | Select-Object -First 1
+                                    if ($latestStableEntry) {
+                                        $script:CachedLatestVersion = $latestStableEntry.Version
+                                    }
+                                    $latestBetaEntry = $websiteReleases | Where-Object { $_.Type -eq 'Beta' } | Select-Object -First 1
+                                    if ($latestBetaEntry) {
+                                        $betaIdx = [array]::IndexOf($websiteReleases, $latestBetaEntry)
+                                        $stableIdx = if ($latestStableEntry) { [array]::IndexOf($websiteReleases, $latestStableEntry) } else { $websiteReleases.Count }
+                                        if ($betaIdx -lt $stableIdx) {
+                                            $script:CachedLatestBeta = $latestBetaEntry.Version
+                                        }
+                                    }
                                 }
                             }
                             catch {
-                                Write-Log "[WARN] Stable version check failed: $($_.Exception.Message)"
+                                Write-Log "[WARN] Version check failed: $($_.Exception.Message)"
                             }
                         }
                         $currentChannel = $config.DefaultChannel ?? 'stable'

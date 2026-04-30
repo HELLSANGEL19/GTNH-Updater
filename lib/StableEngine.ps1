@@ -39,10 +39,21 @@ function Invoke-StableUpdate {
         The config PSCustomObject.
     .PARAMETER Target
         The target type: 'server' or 'client'.
+    .PARAMETER Release
+        Optional pre-fetched release object (from Get-WebsiteReleases, etc.).
+        If provided, skips the version fetch step and uses this release directly.
+    .PARAMETER ChannelLabel
+        Optional channel label for history recording. Defaults to 'stable'.
+    .PARAMETER WebsiteReleases
+        Optional array of all website releases (from Get-WebsiteReleases) used
+        for position-based downgrade detection within the same base version.
     #>
     param(
         [Parameter(Mandatory)][PSCustomObject]$Config,
-        [Parameter(Mandatory)][ValidateSet('server', 'client')][string]$Target
+        [Parameter(Mandatory)][ValidateSet('server', 'client')][string]$Target,
+        [PSCustomObject]$Release,
+        [string]$ChannelLabel = 'stable',
+        [array]$WebsiteReleases
     )
 
     $instancePath = $Target -eq 'server' ? $Config.ServerPath : $Config.ClientInstancePath
@@ -64,15 +75,20 @@ function Invoke-StableUpdate {
         return
     }
 
-    Write-Header "Stable Update - $($Target.ToUpper())"
+    Write-Header "$($ChannelLabel.Substring(0,1).ToUpper() + $ChannelLabel.Substring(1)) Update - $($Target.ToUpper())"
 
     # ── Step 1: Query latest version ──────────────────────────────────────────
-    Write-Step "Checking for latest stable release..."
+    Write-Step "Checking for latest $ChannelLabel release..."
 
-    $release = Get-LatestStableRelease -PackType ($Config.JavaVersion ?? 'java17')
-    if (-not $release) {
-        Write-Info "Primary API failed, trying fallback..."
-        $release = Get-LatestStableReleaseFallback -PackType ($Config.JavaVersion ?? 'java17')
+    if ($Release) {
+        $release = $Release
+    }
+    else {
+        $release = Get-LatestStableRelease -PackType ($Config.JavaVersion ?? 'java17')
+        if (-not $release) {
+            Write-Info "Primary API failed, trying fallback..."
+            $release = Get-LatestStableReleaseFallback -PackType ($Config.JavaVersion ?? 'java17')
+        }
     }
 
     if (-not $release) {
@@ -82,44 +98,44 @@ function Invoke-StableUpdate {
     }
 
     $latestVersion = $release.Version
-    Write-Info "Latest stable version: $latestVersion"
+    Write-Info "Latest $ChannelLabel version: $latestVersion"
 
     # ── Step 2: Compare with installed version ────────────────────────────────
     Write-Step "Comparing versions..."
 
     $installedVersion = $Target -eq 'server' ? $Config.InstalledServerVersion : $Config.InstalledClientVersion
 
-    # Check for dangerous downgrade: daily/experimental -> stable
+    # ── Channel switch warning: nightly -> zip-based release ─────────────────
+    # Nightlies use JAR-based updates, website releases use zip-based updates.
+    # Only warn when the target base version is clearly older than the nightly
+    # base version. Same-base or newer-base transitions are fine (the user is
+    # moving to a release cut from the same or newer code).
     if ($installedVersion -and $installedVersion -match 'nightly') {
-        # Extract the base version from the nightly tag (e.g., "2.9.0" from "2.9.0-nightly-2026-04-29")
         $nightlyBase = $null
         if ($installedVersion -match '^(\d+\.\d+\.\d+)') {
             $nightlyBase = $Matches[1]
         }
 
-        # Compare: if the stable version is the same base or older, this is a downgrade
-        $isDowngrade = $false
-        if ($nightlyBase) {
-            try {
-                $nightlyVer = [version]$nightlyBase
-                $stableVer = [version]$latestVersion
-                if ($stableVer -lt $nightlyVer) {
-                    $isDowngrade = $true
-                }
-            } catch {
-                # Version parsing failed, assume downgrade if nightly base matches
-                if ($nightlyBase -eq $latestVersion) {
-                    $isDowngrade = $true
-                }
-            }
+        $targetBase = $latestVersion
+        if ($latestVersion -match '^(\d+\.\d+\.\d+)') {
+            $targetBase = $Matches[1]
         }
 
-        if ($isDowngrade) {
+        $isClearDowngrade = $false
+        if ($nightlyBase -and $targetBase) {
+            try {
+                if ([version]$targetBase -lt [version]$nightlyBase) {
+                    $isClearDowngrade = $true
+                }
+            } catch {}
+        }
+
+        if ($isClearDowngrade) {
             Write-Host ""
             Write-Host "  ╔══════════════════════════════════════════════════════════════╗" -ForegroundColor Red
             Write-Host "  ║  DOWNGRADE WARNING                                          ║" -ForegroundColor Red
             Write-Host "  ║                                                              ║" -ForegroundColor Red
-            Write-Host "  ║  You are on a dev build. Going back to an older stable       ║" -ForegroundColor Red
+            Write-Host "  ║  You are on a newer dev build. Going back to an older        ║" -ForegroundColor Red
             Write-Host "  ║  release can CORRUPT your world and break saves.             ║" -ForegroundColor Red
             Write-Host "  ║                                                              ║" -ForegroundColor Red
             Write-Host "  ║  Only do this with a backup from BEFORE you switched         ║" -ForegroundColor Red
@@ -127,9 +143,69 @@ function Invoke-StableUpdate {
             Write-Host "  ╚══════════════════════════════════════════════════════════════╝" -ForegroundColor Red
             Write-Host ""
             Write-Warn "Current: $installedVersion"
-            Write-Warn "Target:  $latestVersion (stable)"
+            Write-Warn "Target:  $latestVersion ($ChannelLabel)"
             Write-Host ""
             if (-not (Confirm-Action "I understand the risk. Proceed with downgrade?")) {
+                Write-Info "Update cancelled."
+                return
+            }
+        }
+    }
+
+    # ── Downgrade check: picking an older zip-based version ───────────────────
+    # Covers stable->older-stable, stable->older-beta, beta->older-beta, etc.
+    if ($installedVersion -and -not ($installedVersion -match 'nightly')) {
+        $installedBase = $installedVersion
+        if ($installedVersion -match '^(\d+\.\d+\.\d+)') {
+            $installedBase = $Matches[1]
+        }
+        $targetBase = $latestVersion
+        if ($latestVersion -match '^(\d+\.\d+\.\d+)') {
+            $targetBase = $Matches[1]
+        }
+
+        $isOlderVersion = $false
+        try {
+            $instVer = [version]$installedBase
+            $targVer = [version]$targetBase
+            if ($targVer -lt $instVer) {
+                $isOlderVersion = $true
+            } elseif ($targVer -eq $instVer) {
+                # Same base: check if going from stable to beta (e.g., 2.8.0 -> 2.8.0-beta-4)
+                $installedIsBeta = $installedVersion -match '[-_](beta|rc)'
+                $targetIsBeta = $latestVersion -match '[-_](beta|rc)'
+                if (-not $installedIsBeta -and $targetIsBeta) {
+                    $isOlderVersion = $true
+                }
+                elseif ($installedIsBeta -and $targetIsBeta -and $WebsiteReleases) {
+                    # Both are beta/RC with the same base: use page position
+                    # Lower index = newer on the version history page
+                    $installedIdx = -1
+                    $targetIdx = -1
+                    for ($ri = 0; $ri -lt $WebsiteReleases.Count; $ri++) {
+                        if ($WebsiteReleases[$ri].Version -eq $installedVersion) { $installedIdx = $ri }
+                        if ($WebsiteReleases[$ri].Version -eq $latestVersion) { $targetIdx = $ri }
+                    }
+                    # If installed is at a lower index (newer) than target, it's a downgrade
+                    if ($installedIdx -ge 0 -and $targetIdx -ge 0 -and $targetIdx -gt $installedIdx) {
+                        $isOlderVersion = $true
+                    }
+                }
+            }
+        } catch {
+            # Version parsing failed, skip downgrade check
+        }
+
+        if ($isOlderVersion) {
+            Write-Host ""
+            Write-Warn "You are selecting an older version than what is installed."
+            Write-Warn "Current: $installedVersion"
+            Write-Warn "Target:  $latestVersion"
+            Write-Host ""
+            Write-Info "Going to an older version can break saves if the world was"
+            Write-Info "loaded on the newer version. Make sure you have a backup."
+            Write-Host ""
+            if (-not (Confirm-Action "Continue with older version?")) {
                 Write-Info "Update cancelled."
                 return
             }
@@ -794,7 +870,7 @@ function Invoke-StableUpdate {
         Write-Step "Recording update..."
 
         $historyDetails = "+$($added.Count) -$($removed.Count) ~$($updated.Count)"
-        Add-UpdateHistoryEntry -Config $Config -Version $latestVersion -Channel 'stable' -Target $Target -Details $historyDetails
+        Add-UpdateHistoryEntry -Config $Config -Version $latestVersion -Channel $ChannelLabel -Target $Target -Details $historyDetails
 
         if ($Target -eq 'server') {
             $Config.InstalledServerVersion = $latestVersion
@@ -806,7 +882,7 @@ function Invoke-StableUpdate {
         $updateSucceeded = $true
 
         Write-Host ""
-        Write-Success "Stable update complete! $Target updated to v$latestVersion."
+        Write-Success "$($ChannelLabel.Substring(0,1).ToUpper() + $ChannelLabel.Substring(1)) update complete! $Target updated to v$latestVersion."
     }
     catch {
         if ($postDeletion) {

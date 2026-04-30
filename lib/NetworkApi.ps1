@@ -10,6 +10,8 @@
 #                                    stable version and extract download URLs
 #   Get-LatestStableReleaseFallback - Scrape downloads.gtnewhorizons.com file
 #                                    listing as fallback for version/URL info
+#   Get-WebsiteReleases           - Scrape version history page for all releases
+#                                    (stable + beta/RC) with download URLs
 #   Invoke-FileDownload           - Download file with progress display (URL, size
 #                                    in MB, elapsed time), save to cache folder
 #   Test-FileIntegrity            - Verify SHA256 hash of a downloaded file
@@ -476,6 +478,94 @@ function Test-FileIntegrity {
     catch {
         Write-Warn "Could not verify file integrity: $($_.Exception.Message)"
         Write-Log "[WARN] Integrity check error: $($_.Exception.Message)"
+        return $null
+    }
+}
+
+function Get-WebsiteReleases {
+    <#
+    .SYNOPSIS
+        Get all GTNH releases from the version history page.
+    .DESCRIPTION
+        Scrapes www.gtnewhorizons.com/version-history to find all listed releases,
+        both stable and beta/RC. Returns them in page order (newest first).
+
+        Each entry includes the version string, release type (Stable or Beta),
+        and constructed download URLs following the standard naming convention:
+          Server: https://downloads.gtnewhorizons.com/ServerPacks/GT_New_Horizons_{VERSION}_Server_Java_17-25.zip
+          Client: https://downloads.gtnewhorizons.com/Multi_mc_downloads/GT_New_Horizons_{VERSION}_Java_17-25.zip
+    .PARAMETER PackType
+        The Java version: 'java17' or 'java8'. Defaults to 'java17'.
+    .OUTPUTS
+        Array of PSCustomObject with Version, Type (Stable/Beta), ServerZipUrl,
+        ServerZipName, ClientZipUrl, ClientZipName, ReleaseUrl.
+        Returns $null if fetch fails.
+    #>
+    param(
+        [string]$PackType = 'java17'
+    )
+
+    $versionHistoryUrl = 'https://www.gtnewhorizons.com/version-history'
+
+    try {
+        Write-Log "[RELEASES] Fetching version history page: $versionHistoryUrl"
+        $response = Invoke-WebRequest -Uri $versionHistoryUrl -UseBasicParsing -ErrorAction Stop
+        $content = $response.Content
+
+        # Match version entries: "2.8.4 Stable release" or "2.8.0-beta-4 Beta release"
+        # Version patterns: X.Y.Z (stable) or X.Y.Z-beta-N, X.Y.Z-rc-N, X.Y.Z-RC-N, X.Y.Z-RC1 (beta/RC)
+        $entryPattern = '(\d+\.\d+\.\d+(?:[-_](?:beta|rc)[-_]?\d*)?)\s+(Stable|Beta)\s+release'
+        $regexMatches = [regex]::Matches($content, $entryPattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+
+        if ($regexMatches.Count -eq 0) {
+            Write-Warn "No releases found on version history page."
+            return $null
+        }
+
+        $javaSuffix = $PackType -eq 'java17' ? 'Java_17-25' : 'Java_8'
+        $releases = @()
+
+        foreach ($m in $regexMatches) {
+            $version = $m.Groups[1].Value
+            # Normalize type to title case for consistent comparison
+            $rawType = $m.Groups[2].Value
+            $type = $rawType.Substring(0,1).ToUpper() + $rawType.Substring(1).ToLower()
+
+            $serverZipName = "GT_New_Horizons_${version}_Server_${javaSuffix}.zip"
+            $serverZipUrl = "$($script:GtnhDownloadsBase)/ServerPacks/$serverZipName"
+            $clientZipName = "GT_New_Horizons_${version}_${javaSuffix}.zip"
+            $clientZipUrl = "$($script:GtnhDownloadsBase)/Multi_mc_downloads/$clientZipName"
+
+            $releases += [PSCustomObject]@{
+                Version       = $version
+                Type          = $type
+                ServerZipUrl  = $serverZipUrl
+                ServerZipName = $serverZipName
+                ClientZipUrl  = $clientZipUrl
+                ClientZipName = $clientZipName
+                ReleaseUrl    = $versionHistoryUrl
+            }
+        }
+
+        Write-Log "[RELEASES] Found $($releases.Count) releases on version history page."
+        if ($releases.Count -eq 0) {
+            return $null
+        }
+        return $releases
+    }
+    catch {
+        $ex = $_.Exception
+        if ($ex -is [System.Net.WebException] -or
+            $ex.InnerException -is [System.Net.WebException] -or
+            $ex -is [System.Net.Http.HttpRequestException] -or
+            $ex.InnerException -is [System.Net.Http.HttpRequestException]) {
+            Write-Err "Network request failed. Check your internet connection."
+            Write-Log "[ERROR] Network failure for version history page - $($ex.Message)"
+        }
+        else {
+            Write-Err "Failed to fetch version history page: $($ex.Message)"
+            Write-Log "[ERROR] Version history page fetch failed - $($ex.Message)"
+        }
         return $null
     }
 }

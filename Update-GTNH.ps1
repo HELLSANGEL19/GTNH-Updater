@@ -7,7 +7,8 @@
 .DESCRIPTION
     A PowerShell 7+ script that automates updating GTNH server (AMP/CubeCoders) and
     client (Prism Launcher) installations on Windows. Fully interactive and menu-driven
-    with no CLI flags. Supports three update channels (Stable, Daily, Experimental),
+    with no CLI flags. Supports three update channels (Stable, Daily, Experimental)
+    with beta/RC version support through the stable channel's version picker,
     auto-detects instance paths and Java installations, preserves critical files across
     updates, and provides config patching, custom mod management, preview-first updates,
     download caching, backup management, and structured logging.
