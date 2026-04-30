@@ -1418,6 +1418,24 @@ function Invoke-ScriptUpdateCheck {
         Remove-Item -LiteralPath $extractDir -Recurse -Force -ErrorAction SilentlyContinue
     } catch {}
 
+    # Ensure the installed version matches the release tag
+    # (safety net in case the developer forgot to bump the version before releasing)
+    $mainScript = Join-Path $scriptDir 'Update-GTNH.ps1'
+    if (Test-Path -LiteralPath $mainScript) {
+        try {
+            $mainContent = Get-Content -LiteralPath $mainScript -Raw -Encoding UTF8
+            $newVersion = $updateInfo.Version -replace '^v', ''
+            $patched = $mainContent -replace "(\`$script:UpdaterVersion\s*=\s*')[^']*(')", "`${1}$newVersion`${2}"
+            if ($patched -ne $mainContent) {
+                Set-Content -LiteralPath $mainScript -Value $patched -Encoding UTF8 -NoNewline
+                Write-Log "[SELF-UPDATE] Patched UpdaterVersion to $newVersion"
+            }
+        }
+        catch {
+            Write-Log "[WARN] Could not patch version in Update-GTNH.ps1: $($_.Exception.Message)"
+        }
+    }
+
     Write-Success "Updated to v$($updateInfo.Version) ($updatedFiles files)."
     Write-Host ""
     Write-Info "Restart the updater to use the new version."
