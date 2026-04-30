@@ -12,6 +12,8 @@
 #                                    listing as fallback for version/URL info
 #   Get-WebsiteReleases           - Scrape version history page for all releases
 #                                    (stable + beta/RC) with download URLs
+#   Get-OfficialModList           - Fetch official mod list for a version from
+#                                    the GitHub repo README
 #   Invoke-FileDownload           - Download file with progress display (URL, size
 #                                    in MB, elapsed time), save to cache folder
 #   Test-FileIntegrity            - Verify SHA256 hash of a downloaded file
@@ -478,6 +480,83 @@ function Test-FileIntegrity {
     catch {
         Write-Warn "Could not verify file integrity: $($_.Exception.Message)"
         Write-Log "[WARN] Integrity check error: $($_.Exception.Message)"
+        return $null
+    }
+}
+
+function Get-OfficialModList {
+    <#
+    .SYNOPSIS
+        Fetch the official GTNH mod list for a specific version from GitHub.
+    .DESCRIPTION
+        Downloads the README.md from the GT-New-Horizons-Modpack repo at the
+        specified version tag and parses the modlist table. Returns an array
+        of mod names (the Name column from the markdown table).
+    .PARAMETER Version
+        The GTNH version tag (e.g., '2.8.4', '2.8.0-beta-4').
+    .OUTPUTS
+        Array of mod name strings, or $null on failure.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Version
+    )
+
+    $readmeUrl = "https://raw.githubusercontent.com/GTNewHorizons/GT-New-Horizons-Modpack/$Version/README.md"
+
+    try {
+        Write-Log "[MODLIST] Fetching official mod list for $Version from GitHub..."
+        $response = Invoke-WebRequest -Uri $readmeUrl -UseBasicParsing -ErrorAction Stop
+        $content = $response.Content
+
+        # Parse the markdown table: | [Name](url) | Version |
+        # Extract the mod name from each row (strip markdown link syntax)
+        $modNames = @()
+        $inTable = $false
+        foreach ($line in ($content -split "`n")) {
+            $trimmed = $line.Trim()
+
+            # Detect the start of the modlist table
+            if ($trimmed -match '^\|\s*Name\s*\|\s*Version\s*\|') {
+                $inTable = $true
+                continue
+            }
+            # Skip the separator row
+            if ($inTable -and $trimmed -match '^\|\s*---') {
+                continue
+            }
+            # Parse mod rows
+            if ($inTable -and $trimmed -match '^\|') {
+                # Extract the name cell: | [Name](url) | or | Name |
+                if ($trimmed -match '^\|\s*\[([^\]]+)\]') {
+                    $modNames += $Matches[1]
+                }
+                elseif ($trimmed -match '^\|\s*([^|]+?)\s*\|') {
+                    $modNames += $Matches[1].Trim()
+                }
+            }
+            elseif ($inTable -and $trimmed -notmatch '^\|') {
+                # End of table
+                break
+            }
+        }
+
+        Write-Log "[MODLIST] Found $($modNames.Count) official mods for $Version."
+        if ($modNames.Count -eq 0) {
+            return $null
+        }
+        return $modNames
+    }
+    catch {
+        $ex = $_.Exception
+        if ($ex -is [System.Net.WebException] -or
+            $ex.InnerException -is [System.Net.WebException] -or
+            $ex -is [System.Net.Http.HttpRequestException] -or
+            $ex.InnerException -is [System.Net.Http.HttpRequestException]) {
+            Write-Log "[WARN] Could not fetch mod list for $Version (network error)"
+        }
+        else {
+            Write-Log "[WARN] Could not fetch mod list for $Version - $($ex.Message)"
+        }
         return $null
     }
 }

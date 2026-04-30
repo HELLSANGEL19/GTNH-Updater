@@ -749,6 +749,7 @@ function Invoke-CustomModSettingsMenu {
         }
 
         Write-Host ""
+        Write-MenuOption "S" "Scan for custom mods (compares against official mod list)"
         Write-MenuOption "B" "Browse mods/ folder and pick"
         Write-MenuOption "A" "Add manually (type filenames)"
         Write-MenuOption "D" "Remove individual mod"
@@ -758,6 +759,99 @@ function Invoke-CustomModSettingsMenu {
         $choice = Read-MenuChoice "Select option"
 
         switch ($choice) {
+            { $_ -eq 'S' -or $_ -eq 's' } {
+                # Scan for custom mods by comparing against the official mod list
+                $installedVer = $Target -eq 'server' ? $Config.InstalledServerVersion : $Config.InstalledClientVersion
+                if ([string]::IsNullOrEmpty($installedVer) -or $installedVer -eq 'unknown') {
+                    Write-Warn "No installed version known for $label. Set it in Update Preferences first."
+                    Wait-ForKey
+                    continue
+                }
+                if ([string]::IsNullOrEmpty($instancePath) -or -not (Test-Path -LiteralPath $instancePath)) {
+                    Write-Warn "No valid $($label.ToLower()) path configured."
+                    Wait-ForKey
+                    continue
+                }
+                $modsDir = Join-Path $instancePath 'mods'
+                if (-not (Test-Path -LiteralPath $modsDir)) {
+                    Write-Warn "No mods/ folder found at: $instancePath"
+                    Wait-ForKey
+                    continue
+                }
+
+                Write-Info "Fetching official mod list for v$installedVer..."
+                $officialMods = Get-OfficialModList -Version $installedVer
+                if (-not $officialMods) {
+                    Write-Warn "Could not fetch the official mod list for v$installedVer."
+                    Write-Info "The version tag may not exist on GitHub, or you may be offline."
+                    Wait-ForKey
+                    continue
+                }
+
+                # Build base name set from official mod list
+                $officialBaseNames = @{}
+                foreach ($modName in $officialMods) {
+                    $officialBaseNames[(Get-ModBaseName -FileName $modName)] = $true
+                }
+
+                # Get local JARs and find ones not in the official list
+                $localJars = @(Get-ChildItem -LiteralPath $modsDir -Filter '*.jar' -File | ForEach-Object { $_.Name })
+                $alreadyTracked = @($modList)
+                $candidates = @()
+                foreach ($jar in $localJars) {
+                    $base = Get-ModBaseName -FileName $jar
+                    if (-not $officialBaseNames.ContainsKey($base) -and $jar -notin $alreadyTracked) {
+                        $candidates += $jar
+                    }
+                }
+
+                if ($candidates.Count -eq 0) {
+                    Write-Success "No untracked custom mods found. All mods match the official v$installedVer list."
+                    if ($alreadyTracked.Count -gt 0) {
+                        Write-Info "You have $($alreadyTracked.Count) custom mod(s) already tracked."
+                    }
+                    Wait-ForKey
+                    continue
+                }
+
+                Write-Host ""
+                Write-Info "Found $($candidates.Count) mod(s) not in the official v$installedVer pack:"
+                Write-Host ""
+                $sortedCandidates = @($candidates | Sort-Object)
+                $tagWidth = "[$($sortedCandidates.Count)]".Length
+                for ($ci = 0; $ci -lt $sortedCandidates.Count; $ci++) {
+                    $tag = "[$($ci + 1)]".PadLeft($tagWidth)
+                    Write-Host "    $tag $($sortedCandidates[$ci])" -ForegroundColor DarkYellow
+                }
+                Write-Host ""
+                Write-Host "  Enter numbers to mark as custom (e.g., 1,3,5), 'a' for all, or Enter to skip: " -NoNewline -ForegroundColor White
+                $scanInput = (Read-Host).Trim()
+
+                if ($scanInput) {
+                    $toAdd = @()
+                    if ($scanInput -eq 'a' -or $scanInput -eq 'A') {
+                        $toAdd = $sortedCandidates
+                    } else {
+                        foreach ($part in ($scanInput -split ',')) {
+                            $idx = 0
+                            if ([int]::TryParse($part.Trim(), [ref]$idx) -and $idx -ge 1 -and $idx -le $sortedCandidates.Count) {
+                                $toAdd += $sortedCandidates[$idx - 1]
+                            }
+                        }
+                    }
+
+                    if ($toAdd.Count -gt 0) {
+                        if ($Target -eq 'server') {
+                            $Config.CustomServerMods = @($Config.CustomServerMods) + $toAdd
+                        } else {
+                            $Config.CustomClientMods = @($Config.CustomClientMods) + $toAdd
+                        }
+                        Save-Config -Config $Config
+                        Write-Success "Added $($toAdd.Count) mod(s) to custom $($label.ToLower()) mods."
+                    }
+                }
+                Wait-ForKey
+            }
             { $_ -eq 'B' -or $_ -eq 'b' } {
                 if ([string]::IsNullOrEmpty($instancePath) -or -not (Test-Path -LiteralPath $instancePath)) {
                     Write-Warn "No valid $($label.ToLower()) path configured."
