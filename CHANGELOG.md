@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2-beta] - 2026-04-30
+
+### Fixed
+- Version history page regex updated to match HTML span tags (was finding zero releases)
+- Version detection validates gtnh_version.txt content (rejects non-version strings like "2")
+- Self-update API URL corrected to match actual GitHub repo name
+
 ## [0.1.1-beta] - 2026-04-30
 
 ### Added
