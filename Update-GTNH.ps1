@@ -46,7 +46,7 @@ if ($PSVersionTable.PSVersion.Major -lt 7) {
 # GLOBAL VARIABLES
 # ============================================================================
 
-$script:UpdaterVersion = '0.1.2.1'
+$script:UpdaterVersion = '0.1.2.1-beta'
 
 $script:ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $script:ConfigPath = Join-Path $script:ScriptDir 'gtnh-updater-config.json'
