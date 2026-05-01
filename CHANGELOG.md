@@ -1,6 +1,6 @@
 # Changelog
 
-## [1.1.0-beta] - 2026-04-30
+## [0.1.1-beta] - 2026-04-30
 
 ### Added
 - Version picker for stable channel showing all releases (stable + beta/RC) with dates and color coding
