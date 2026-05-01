@@ -95,7 +95,8 @@ Supports Forge `.cfg` files, `.properties` files, and `server.properties`. Secti
 
 ### Custom Mods
 
-Mods you have added that are not part of the GTNH pack are preserved during updates. You can manage them in two ways:
+Mods you have added that are not part of the GTNH pack are preserved during updates. You can manage them in several ways:
+- **Scan** against the official mod list to automatically find custom mods (compares your mods/ folder against the GitHub mod list for your version)
 - **Browse** the mods/ folder and pick from a list (no typing filenames)
 - **Add manually** by typing filenames (with validation and examples)
 
@@ -122,6 +123,14 @@ View the changelog for any recent GTNH release directly from the main menu. Fetc
 ### Update History
 
 View a log of all past updates with dates, versions, channels, and targets from the main menu.
+
+### Version Auto-Detection
+
+The updater automatically detects your installed GTNH version from changelog files in your instance folder (e.g., "changelog from 2.7.3 to 2.7.4.txt"). Server and client versions are detected independently. This runs during the setup wizard and on every startup if the version is unknown.
+
+### Self-Update
+
+The updater checks for new versions of itself on startup. If a newer release is available on GitHub, it offers to download and install the update automatically. After updating, it exits so you can restart with the new version. No manual download needed.
 
 ## Main Menu
 

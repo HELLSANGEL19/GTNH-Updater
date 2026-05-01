@@ -10,7 +10,7 @@ GTNHUpdater/
     DisplayHelpers.ps1          Banner, colors, prompts, input helpers
     Logging.ps1                 Structured log files with PII redaction
     ConfigManager.ps1           JSON config load, save, validate, export, import
-    Detection.ps1               Auto-detect Java, AMP, Prism, MultiMC, PolyMC, ATLauncher
+    Detection.ps1               Auto-detect Java, AMP, Prism, MultiMC, PolyMC, ATLauncher, version from changelogs
     SetupWizard.ps1             First-run interactive setup
     NetworkApi.ps1              Downloads with progress/speed, API calls, integrity check, version history scraping, self-update
     FilePreservation.ps1        Preserve and restore critical files across updates
