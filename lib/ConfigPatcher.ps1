@@ -107,10 +107,11 @@ function Set-ConfigValue {
 function Invoke-ConfigPatches {
     <#
     .SYNOPSIS
-        Apply all config patches for the given target sequentially.
+        Validate and apply all config patches for the given target.
     .DESCRIPTION
-        Filters patches by target (matching target or 'both'), then applies each
-        via Set-ConfigValue. Each patch application is logged individually.
+        First validates all patches (checks file exists, key exists in file).
+        Reports any issues and lets the user skip broken patches or cancel.
+        Then applies valid patches via Set-ConfigValue.
     .PARAMETER Config
         The config PSCustomObject containing ConfigPatches array.
     .PARAMETER InstancePath
@@ -133,9 +134,93 @@ function Invoke-ConfigPatches {
         return
     }
 
-    Write-Step "Applying $(@($patches).Count) config patch(es) for $Target..."
+    $patchList = @($patches)
 
-    foreach ($patch in $patches) {
+    # ── Pre-flight validation ─────────────────────────────────────────────────
+    $validPatches = @()
+    $issues = @()
+
+    foreach ($patch in $patchList) {
+        $normalizedPath = $patch.FilePath -replace '/', '\'
+        $fullPath = Join-Path $InstancePath $normalizedPath
+        $desc = $patch.Description ? " ($($patch.Description))" : ''
+
+        if (-not (Test-Path -LiteralPath $fullPath)) {
+            $issues += [PSCustomObject]@{
+                Patch   = $patch
+                Problem = "File not found: $($patch.FilePath)"
+            }
+            continue
+        }
+
+        # Check if the key exists in the file
+        try {
+            $lines = Get-Content -LiteralPath $fullPath -Encoding UTF8
+            $escapedKey = [regex]::Escape($patch.Key)
+            $pattern = "^\s*${escapedKey}\s*="
+            $keyFound = $false
+
+            $currentSection = ''
+            $inTargetSection = [string]::IsNullOrEmpty($patch.Section)
+
+            foreach ($line in $lines) {
+                if ($line -match '^\s*"?([^"{}=#]+)"?\s*\{') {
+                    $currentSection = $Matches[1].Trim()
+                    if (-not [string]::IsNullOrEmpty($patch.Section)) {
+                        $inTargetSection = $currentSection -eq $patch.Section
+                    }
+                }
+                if ($inTargetSection -and $line -match $pattern) {
+                    $keyFound = $true
+                    break
+                }
+            }
+
+            if (-not $keyFound) {
+                $sectionNote = $patch.Section ? " in section '$($patch.Section)'" : ''
+                $issues += [PSCustomObject]@{
+                    Patch   = $patch
+                    Problem = "Key '$($patch.Key)' not found${sectionNote} in $($patch.FilePath)"
+                }
+                continue
+            }
+        }
+        catch {
+            $issues += [PSCustomObject]@{
+                Patch   = $patch
+                Problem = "Cannot read file: $($_.Exception.Message)"
+            }
+            continue
+        }
+
+        $validPatches += $patch
+    }
+
+    # Report issues if any
+    if ($issues.Count -gt 0) {
+        Write-Warn "$($issues.Count) patch(es) have issues:"
+        foreach ($issue in $issues) {
+            $desc = $issue.Patch.Description ? " ($($issue.Patch.Description))" : ''
+            Write-Host "    - $($issue.Problem)$desc" -ForegroundColor DarkYellow
+        }
+        Write-Host ""
+        if ($validPatches.Count -gt 0) {
+            Write-Info "$($validPatches.Count) valid patch(es) will still be applied."
+            Write-Info "Fix or remove broken patches in Settings > Config Patches."
+        } else {
+            Write-Warn "No valid patches to apply."
+            return
+        }
+    }
+
+    # ── Apply valid patches ───────────────────────────────────────────────────
+    if ($validPatches.Count -eq 0) {
+        return
+    }
+
+    Write-Step "Applying $($validPatches.Count) config patch(es) for $Target..."
+
+    foreach ($patch in $validPatches) {
         $patchParams = @{
             FilePath     = $patch.FilePath
             Key          = $patch.Key
