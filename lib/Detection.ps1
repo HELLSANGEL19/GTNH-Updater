@@ -218,16 +218,22 @@ function Get-InstalledGtnhVersion {
             }
 
             if ($toVersions.Count -gt 0) {
+                if ($toVersions.Count -eq 1) {
+                    return $toVersions[0]
+                }
                 # Sort: highest base version first, then stable before beta for same base
                 $sorted = $toVersions | Sort-Object {
                     $base = '0.0.0'
                     if ($_ -match '^(\d+\.\d+\.\d+)') { $base = $Matches[1] }
                     [version]$base
-                }, {
-                    # Stable (no suffix) sorts after beta so it ends up first in descending
-                    if ($_ -match '[-_](beta|rc)') { 0 } else { 1 }
-                }, { $_ } -Descending
-                return $sorted[0]
+                } -Descending
+                # Among same-base versions, prefer stable (no suffix) over beta
+                $topBase = '0.0.0'
+                if ($sorted[0] -match '^(\d+\.\d+\.\d+)') { $topBase = $Matches[1] }
+                $topGroup = @($sorted | Where-Object { $_ -match "^$([regex]::Escape($topBase))" })
+                $stable = $topGroup | Where-Object { $_ -notmatch '[-_](beta|rc)' } | Select-Object -First 1
+                if ($stable) { return $stable }
+                return $topGroup[0]
             }
         }
     }
