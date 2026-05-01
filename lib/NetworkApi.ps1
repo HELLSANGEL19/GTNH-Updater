@@ -591,10 +591,10 @@ function Get-WebsiteReleases {
         $response = Invoke-WebRequest -Uri $versionHistoryUrl -UseBasicParsing -ErrorAction Stop
         $content = $response.Content
 
-        # Match version entries: "2.8.4 Stable release" or "2.8.0-beta-4 Beta release"
-        # Followed by whitespace and a date like "2025/12/23"
-        # Version patterns: X.Y.Z (stable) or X.Y.Z-beta-N, X.Y.Z-rc-N, X.Y.Z-RC-N, X.Y.Z-RC1 (beta/RC)
-        $entryPattern = '(\d+\.\d+\.\d+(?:[-_](?:beta|rc)[-_]?\d*)?)\s+(Stable|Beta)\s+release\s+(\d{4}/\d{2}/\d{2})'
+        # Match version entries in the HTML. The version and type label are in
+        # separate <span> tags: ...>2.8.4</span> <span ...>Stable release</span>
+        # Also capture the date which follows in another span.
+        $entryPattern = '(\d+\.\d+\.\d+(?:[-_](?:beta|rc)[-_]?\d*)?)</span>\s*<span[^>]*>\s*(Stable|Beta)\s+release'
         $regexMatches = [regex]::Matches($content, $entryPattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
 
         if ($regexMatches.Count -eq 0) {
@@ -607,10 +607,15 @@ function Get-WebsiteReleases {
 
         foreach ($m in $regexMatches) {
             $version = $m.Groups[1].Value
-            # Normalize type to title case for consistent comparison
             $rawType = $m.Groups[2].Value
             $type = $rawType.Substring(0,1).ToUpper() + $rawType.Substring(1).ToLower()
-            $date = $m.Groups[3].Value
+
+            # Try to find the date near this match in the HTML
+            $date = ''
+            $afterMatch = $content.Substring($m.Index, [math]::Min(500, $content.Length - $m.Index))
+            if ($afterMatch -match '(\d{4}/\d{2}/\d{2})') {
+                $date = $Matches[1]
+            }
 
             $serverZipName = "GT_New_Horizons_${version}_Server_${javaSuffix}.zip"
             $serverZipUrl = "$($script:GtnhDownloadsBase)/ServerPacks/$serverZipName"

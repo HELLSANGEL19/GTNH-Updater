@@ -193,7 +193,8 @@ function Get-InstalledGtnhVersion {
     if (Test-Path -LiteralPath $versionFile) {
         try {
             $content = (Get-Content -LiteralPath $versionFile -Raw -ErrorAction Stop).Trim()
-            if ($content) {
+            # Validate it looks like a version (at least X.Y format)
+            if ($content -and $content -match '^\d+\.\d+') {
                 return $content
             }
         }
