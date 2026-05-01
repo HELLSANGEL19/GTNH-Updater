@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2.1-beta] - 2026-05-01
+
+### Fixed
+- GitHub API 404 responses are now handled silently instead of flashing an error before the main menu (affected private repos and installs with no releases published)
+- Version input in setup wizard and settings now validates X.Y.Z format, preventing invalid values like "2" from being saved
+- Startup config repair now also corrects invalid version strings, not just empty ones (silent auto-fix on next launch)
+
 ## [0.1.2-beta] - 2026-04-30
 
 ### Fixed
