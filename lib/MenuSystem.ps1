@@ -1534,22 +1534,26 @@ function Invoke-VersionPicker {
                 $tag = '  (installed) <-- latest'
             }
 
-            # Pick color based on type and position
-            $line = "  $num $verPadded$typeCol $dateCol"
+            # Pick color based on type and position - date always rendered in Gray for visibility
+            $linePrefix = "  $num $verPadded$typeCol"
             if ($r.Version -in $installedVersions) {
-                Write-Host "$line" -NoNewline -ForegroundColor White
+                Write-Host "$linePrefix" -NoNewline -ForegroundColor White
+                Write-Host " $dateCol" -NoNewline -ForegroundColor Gray
                 Write-Host "$tag" -ForegroundColor DarkGray
             }
             elseif ($i -eq 0) {
-                Write-Host "$line" -NoNewline -ForegroundColor Green
+                Write-Host "$linePrefix" -NoNewline -ForegroundColor Green
+                Write-Host " $dateCol" -NoNewline -ForegroundColor Gray
                 Write-Host "$tag" -ForegroundColor DarkGreen
             }
             elseif ($r.Type -eq 'Beta') {
-                Write-Host "$line" -NoNewline -ForegroundColor DarkYellow
+                Write-Host "$linePrefix" -NoNewline -ForegroundColor DarkYellow
+                Write-Host " $dateCol" -NoNewline -ForegroundColor Gray
                 Write-Host "$tag" -ForegroundColor DarkGray
             }
             else {
-                Write-Host "$line" -NoNewline -ForegroundColor Cyan
+                Write-Host "$linePrefix" -NoNewline -ForegroundColor Cyan
+                Write-Host " $dateCol" -NoNewline -ForegroundColor Gray
                 Write-Host "$tag" -ForegroundColor DarkGray
             }
         }

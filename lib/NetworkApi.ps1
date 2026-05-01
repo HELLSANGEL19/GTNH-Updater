@@ -1,4 +1,4 @@
-﻿# ============================================================================
+# ============================================================================
 # Group 6: Network / GitHub API - HTTP requests, downloads, rate-limit handling
 # ============================================================================
 # Functions:
@@ -612,7 +612,7 @@ function Get-WebsiteReleases {
 
             # Try to find the date near this match in the HTML
             $date = ''
-            $afterMatch = $content.Substring($m.Index, [math]::Min(500, $content.Length - $m.Index))
+            $afterMatch = $content.Substring($m.Index, [math]::Min(800, $content.Length - $m.Index))
             if ($afterMatch -match '(\d{4}/\d{2}/\d{2})') {
                 $date = $Matches[1]
             }
@@ -683,11 +683,26 @@ function Get-ScriptUpdateInfo {
 
     $latestTag = $release.tag_name -replace '^v', ''
     $currentVer = $script:UpdaterVersion
-
-    # Simple check: if the tag is different from what we have, offer the update
-    if ($latestTag -eq $currentVer) {
-        return $null  # Up to date
+    # Semantic version comparison - only prompt if remote is actually newer
+    # Parse versions like "0.1.2.3-beta" into comparable parts
+    $parseVer = {
+        param($v)
+        $v = $v -replace '^v', ''
+        $base = if ($v -match '^(\d+\.\d+[\.\d]*)') { $Matches[1] } else { '0.0.0' }
+        $parts = $base -split '\.' | ForEach-Object { [int]$_ }
+        while ($parts.Count -lt 4) { $parts += 0 }
+        # Pre-release suffix lowers the version (beta < stable)
+        $pre = if ($v -match '-(alpha|beta|rc)') { 0 } else { 1 }
+        return $parts + $pre
     }
+    $localParts  = & $parseVer $currentVer
+    $remoteParts = & $parseVer $latestTag
+    $isNewer = $false
+    for ($pi = 0; $pi -lt $localParts.Count; $pi++) {
+        if ($remoteParts[$pi] -gt $localParts[$pi]) { $isNewer = $true; break }
+        if ($remoteParts[$pi] -lt $localParts[$pi]) { break }
+    }
+    if (-not $isNewer) { return $null }  # Local is same or newer
 
     # Find the zip asset for download, fall back to GitHub's auto-generated source zip
     $zipAsset = $release.assets | Where-Object { $_.name -like '*.zip' } | Select-Object -First 1

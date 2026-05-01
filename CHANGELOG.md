@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.1.2.4-beta] - 2026-05-01
+
+### Fixed
+- Self-update check now uses semantic version comparison instead of string equality, so local versions newer than the latest GitHub release no longer trigger a false update prompt
+
+## [0.1.2.4-beta] - 2026-05-01
+
+### Fixed
+- Version picker date now correctly shows for the latest/newest release - the HTML search window was 500 chars but the latest release has extra badge HTML pushing the date to ~583 chars away
+
+## [0.1.2.3-beta] - 2026-05-01
+
+### Fixed
+- Version picker date column now always renders in Gray regardless of install state, making it visible for the installed/latest entry
+
 ## [0.1.2.1-beta] - 2026-05-01
 
 ### Fixed
