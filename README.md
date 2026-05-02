@@ -1,6 +1,6 @@
 # GTNH Updater
 
-**Version 0.1.2.5-beta**
+**Version 0.1.2.6-beta**
 
 Automates updating [GregTech: New Horizons](https://www.gtnewhorizons.com/) server and client instances on Windows. Interactive and menu-driven. Works with any server setup and any launcher that uses a standard `.minecraft` folder structure (Prism Launcher, MultiMC, PolyMC, ATLauncher, etc.). Auto-detection is included for AMP (CubeCoders) and common launcher directories, but any instance path can be entered manually.
 

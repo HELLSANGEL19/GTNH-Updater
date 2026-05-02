@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.2.6-beta] - 2026-05-02
+
+### Fixed
+- Self-update check now uses /releases endpoint instead of /releases/latest - the latter skips pre-releases entirely, so the updater never saw any new versions
+- Self-update response handler now correctly handles both array (list) and single-object API responses
+
 ## [0.1.2.5-beta] - 2026-05-02
 
 ### Fixed
@@ -14,6 +20,12 @@
 
 ### Fixed
 - Self-update check now uses semantic version comparison instead of string equality, so local versions newer than the latest GitHub release no longer trigger a false update prompt
+
+## [0.1.2.6-beta] - 2026-05-02
+
+### Fixed
+- Self-update check now uses /releases endpoint instead of /releases/latest - the latter skips pre-releases entirely, so the updater never saw any new versions
+- Self-update response handler now correctly handles both array (list) and single-object API responses
 
 ## [0.1.2.5-beta] - 2026-05-02
 

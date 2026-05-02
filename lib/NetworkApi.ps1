@@ -680,10 +680,14 @@ function Get-ScriptUpdateInfo {
         return $null  # No update URL configured
     }
 
-    $release = Invoke-GitHubApi -Uri $apiUrl
-    if (-not $release) {
+    $response = Invoke-GitHubApi -Uri $apiUrl
+    if (-not $response) {
         return $null
     }
+
+    # /releases returns an array (newest first); /releases/latest returns a single object
+    $release = if ($response -is [System.Array]) { $response | Select-Object -First 1 } else { $response }
+    if (-not $release) { return $null }
 
     $latestTag = $release.tag_name -replace '^v', ''
     $currentVer = $script:UpdaterVersion
