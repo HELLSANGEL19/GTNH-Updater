@@ -6,7 +6,7 @@
 #
 # Checks performed:
 #   - mods/, config/, libraries/ directories exist
-#   - Mod count (warn if < 200 JARs)
+#   - Mod count (warn if < 400 JARs)
 #   - GregTech JAR present (core mod)
 #   - Target-specific: JourneyMapServer (server), options.txt (client)
 # ============================================================================
@@ -16,7 +16,7 @@ function Invoke-Verification {
     .SYNOPSIS
         Run post-update verification checks on an instance.
     .DESCRIPTION
-        Checks that critical directories exist, counts mods (warns if < 200),
+        Checks that critical directories exist, counts mods (warns if < 400),
         verifies GregTech JAR is present, and checks target-specific files.
         Displays results via Write-Success for passes and Write-Warn for issues.
     .PARAMETER InstancePath
@@ -68,10 +68,10 @@ function Invoke-Verification {
     # Count .jar files in mods/
     if (Test-Path -LiteralPath $modsPath) {
         $modCount = (Get-ChildItem -LiteralPath $modsPath -Filter '*.jar' -File).Count
-        if ($modCount -ge 200) {
+        if ($modCount -ge 400) {
             Write-Success "Mod count: $modCount JARs"
         } else {
-            Write-Warn "Mod count: $modCount JARs (expected 200+, may indicate incomplete extraction)"
+            Write-Warn "Mod count: $modCount JARs (expected 400+, may indicate incomplete extraction)"
             $allPassed = $false
         }
     }

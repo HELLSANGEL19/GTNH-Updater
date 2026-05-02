@@ -31,7 +31,7 @@ if ($PSVersionTable.PSVersion.Major -lt 7) {
     Write-Host "  ║  ERROR: PowerShell 7+ Required                              ║" -ForegroundColor Red
     Write-Host "  ╠══════════════════════════════════════════════════════════════╣" -ForegroundColor Red
     Write-Host "  ║  This script requires PowerShell 7.0 or newer (pwsh).       ║" -ForegroundColor Red
-    Write-Host "  ║  You are running PowerShell $($PSVersionTable.PSVersion).                        ║" -ForegroundColor Red
+    $verLine = "  You are running PowerShell $($PSVersionTable.PSVersion)."; $verLine = "  " + $verLine.PadRight(60) + "  "; Write-Host "  $([char]0x2551)$($verLine.Substring(0, [Math]::Min(62, $verLine.Length)).PadRight(62))$([char]0x2551)" -ForegroundColor Red
     Write-Host "  ║                                                              ║" -ForegroundColor Red
     Write-Host "  ║  Download PowerShell 7+:                                     ║" -ForegroundColor Red
     Write-Host "  ║  https://github.com/PowerShell/PowerShell/releases           ║" -ForegroundColor Red
@@ -46,7 +46,7 @@ if ($PSVersionTable.PSVersion.Major -lt 7) {
 # GLOBAL VARIABLES
 # ============================================================================
 
-$script:UpdaterVersion = '0.1.2.4-beta'
+$script:UpdaterVersion = '0.1.2.5-beta'
 
 $script:ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $script:ConfigPath = Join-Path $script:ScriptDir 'gtnh-updater-config.json'

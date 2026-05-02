@@ -1,10 +1,30 @@
 # Changelog
 
+## [0.1.2.5-beta] - 2026-05-02
+
+### Fixed
+- Re-applied missing 404 silent handler in NetworkApi.ps1 (lost during force-push)
+- Java 8 pack users no longer have Java 17 instance-root items (libraries/, patches/, mmc-pack.json) incorrectly moved during client updates
+- Removed dead $javaVersion = 'java17' variable from Save-RollbackSnapshot in BackupManager.ps1
+- Startup cleanup now skips staging folders modified within the last 2 hours, preventing wipeout if the tool is reopened mid-update
+- Post-update verification mod count threshold raised from 200 to 400 (GTNH 2.8.x ships ~580 mods)
+- PS5 error banner now dynamically pads the version string to prevent box border misalignment
+- Renamed Validate-Config to Repair-Config to comply with PowerShell approved verb list
 ## [0.1.2.4-beta] - 2026-05-01
 
 ### Fixed
 - Self-update check now uses semantic version comparison instead of string equality, so local versions newer than the latest GitHub release no longer trigger a false update prompt
 
+## [0.1.2.5-beta] - 2026-05-02
+
+### Fixed
+- Re-applied missing 404 silent handler in NetworkApi.ps1 (lost during force-push)
+- Java 8 pack users no longer have Java 17 instance-root items (libraries/, patches/, mmc-pack.json) incorrectly moved during client updates
+- Removed dead $javaVersion = 'java17' variable from Save-RollbackSnapshot in BackupManager.ps1
+- Startup cleanup now skips staging folders modified within the last 2 hours, preventing wipeout if the tool is reopened mid-update
+- Post-update verification mod count threshold raised from 200 to 400 (GTNH 2.8.x ships ~580 mods)
+- PS5 error banner now dynamically pads the version string to prevent box border misalignment
+- Renamed Validate-Config to Repair-Config to comply with PowerShell approved verb list
 ## [0.1.2.4-beta] - 2026-05-01
 
 ### Fixed

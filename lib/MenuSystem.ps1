@@ -711,7 +711,7 @@ function Invoke-ExportImportMenu {
                 if ($importPath -and (Test-Path -LiteralPath $importPath)) {
                     $imported = Import-ConfigFile -ImportPath $importPath
                     if ($null -ne $imported) {
-                        $imported = Validate-Config -Config $imported
+                        $imported = Repair-Config -Config $imported
                         Save-Config -Config $imported
                         # Update the reference so caller sees changes
                         $imported.PSObject.Properties | ForEach-Object {
@@ -1772,7 +1772,7 @@ function Invoke-MainLoop {
         }
 
         # Validate config (add missing fields with defaults)
-        $config = Validate-Config -Config $config
+        $config = Repair-Config -Config $config
 
         # Log config context for troubleshooting (redact usernames from paths)
         $redactPath = { param($p) if ($p) { $p -replace '\\Users\\[^\\]+', '\Users\***' } else { '(not set)' } }
@@ -1996,7 +1996,7 @@ function Invoke-MainLoop {
                     # Reload config in case updates modified it
                     $reloaded = Load-Config
                     if ($null -ne $reloaded) {
-                        $config = Validate-Config -Config $reloaded
+                        $config = Repair-Config -Config $reloaded
                     }
 
                     # Remind about version mismatch if only one target was updated
@@ -2017,7 +2017,7 @@ function Invoke-MainLoop {
                     # Reload config in case settings changed
                     $reloaded = Load-Config
                     if ($null -ne $reloaded) {
-                        $config = Validate-Config -Config $reloaded
+                        $config = Repair-Config -Config $reloaded
                     }
                     # Fetch version info if not yet cached (handles auto-check toggled on, channel changed, etc.)
                     $autoCheckNow = $config.AutoCheckUpdates ?? $true

@@ -6,7 +6,7 @@
 #   Load-Config         - Read and parse gtnh-updater-config.json, handle
 #                          invalid JSON with specific parse error message
 #   Save-Config         - Serialize config object to JSON (Depth 5) and write to disk
-#   Validate-Config     - Check for missing fields, add defaults, warn about each
+#   Repair-Config     - Check for missing fields, add defaults, warn about each
 #   Show-CurrentConfig  - Display all current settings in formatted output
 #   Export-ConfigFile   - Export config to a specified file path
 #   Import-ConfigFile   - Import config from a specified file path
@@ -98,7 +98,7 @@ function Save-Config {
     }
 }
 
-function Validate-Config {
+function Repair-Config {
     <#
     .SYNOPSIS
         Check for missing fields in a config object, add defaults, warn about each.

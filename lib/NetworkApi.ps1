@@ -73,6 +73,10 @@ function Invoke-GitHubApi {
                 }
                 Write-Log "[WARN] GitHub API 403 for $Uri"
             }
+            elseif ($statusCode -eq 404) {
+                # 404 is silent - resource does not exist yet (e.g. no releases published)
+                Write-Log "[INFO] GitHub API 404 for $Uri - resource not found, skipping silently."
+            }
             else {
                 Write-Err "Server returned HTTP ${statusCode}: $($ex.Message)"
                 Write-Log "[ERROR] HTTP $statusCode for $Uri - $($ex.Message)"

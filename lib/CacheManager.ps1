@@ -83,9 +83,14 @@ function Invoke-StartupCleanup {
         Runs silently during startup to prevent disk space accumulation.
     #>
 
-    # Clean stale staging folders (keep none - they should only exist during an active update)
+    # Clean stale staging folders - skip any modified within the last 2 hours (active update in progress)
     $stagingDirs = Get-ChildItem -LiteralPath $script:ScriptDir -Directory -Filter 'staging-*' -ErrorAction SilentlyContinue
     foreach ($dir in $stagingDirs) {
+        $ageHours = ((Get-Date) - $dir.LastWriteTime).TotalHours
+        if ($ageHours -lt 2) {
+            Write-Log "[CLEANUP] Skipping recent staging folder (< 2h old): $($dir.Name)"
+            continue
+        }
         try {
             Remove-Item -LiteralPath $dir.FullName -Recurse -Force
             Write-Log "[CLEANUP] Removed stale staging folder: $($dir.Name)"

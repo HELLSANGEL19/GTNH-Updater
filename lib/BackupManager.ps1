@@ -372,8 +372,8 @@ function Save-RollbackSnapshot {
             }
         }
 
-        # Also snapshot Java 17+ specific items
-        $javaVersion = 'java17'  # Snapshot both just in case
+        # Also snapshot Java 17+ specific items (always snapshot regardless of pack type for safety)
+
         if ($Target -eq 'server') {
             foreach ($file in $script:ServerJava17FilesToDelete) {
                 $filePath = Join-Path $InstancePath $file

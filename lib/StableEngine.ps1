@@ -828,7 +828,7 @@ function Invoke-StableUpdate {
         # ── Move staging to instance ──────────────────────────────────────────
         Write-Step "Step 4/$totalSteps`: Installing new pack from staging..."
 
-        Move-StagingToInstance -StagingDir $stagingDir -DestinationPath $instancePath -Target $Target
+        Move-StagingToInstance -StagingDir $stagingDir -DestinationPath $instancePath -Target $Target -JavaVersion $javaVersion
 
         # ── Restore preserved files ───────────────────────────────────────────
         Write-Step "Step 5/$totalSteps`: Restoring preserved files..."
@@ -961,9 +961,9 @@ function Move-StagingToInstance {
     param(
         [Parameter(Mandatory)][string]$StagingDir,
         [Parameter(Mandatory)][string]$DestinationPath,
-        [Parameter(Mandatory)][ValidateSet('server', 'client')][string]$Target
+        [Parameter(Mandatory)][ValidateSet('server', 'client')][string]$Target,
+        [string]$JavaVersion = 'java17'
     )
-
     if (-not (Test-Path -LiteralPath $DestinationPath)) {
         New-Item -Path $DestinationPath -ItemType Directory -Force | Out-Null
     }
@@ -988,15 +988,17 @@ function Move-StagingToInstance {
             # Move instance-root items to parent of DestinationPath
             $instanceRoot = Split-Path -Parent $DestinationPath
 
-            foreach ($item in $script:ClientJava17InstanceRootItems) {
-                $srcItem = Join-Path $contentRoot $item
-                if (Test-Path -LiteralPath $srcItem) {
-                    $destItem = Join-Path $instanceRoot $item
-                    if (Test-Path -LiteralPath $destItem) {
-                        Remove-Item -LiteralPath $destItem -Recurse -Force
+            if ($JavaVersion -eq 'java17') {
+                foreach ($item in $script:ClientJava17InstanceRootItems) {
+                    $srcItem = Join-Path $contentRoot $item
+                    if (Test-Path -LiteralPath $srcItem) {
+                        $destItem = Join-Path $instanceRoot $item
+                        if (Test-Path -LiteralPath $destItem) {
+                            Remove-Item -LiteralPath $destItem -Recurse -Force
+                        }
+                        Move-Item -LiteralPath $srcItem -Destination $destItem -Force
+                        Write-Info "  Moved to instance root: $item"
                     }
-                    Move-Item -LiteralPath $srcItem -Destination $destItem -Force
-                    Write-Info "  Moved to instance root: $item"
                 }
             }
 
@@ -1017,7 +1019,7 @@ function Move-StagingToInstance {
     Write-Success "Pack installed to: $DestinationPath"
 
     # For client without .minecraft in zip, still check for instance-root items
-    if ($Target -eq 'client') {
+    if ($Target -eq 'client' -and $JavaVersion -eq 'java17') {
         $instanceRoot = Split-Path -Parent $DestinationPath
 
         foreach ($item in $script:ClientJava17InstanceRootItems) {
