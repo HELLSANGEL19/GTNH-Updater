@@ -110,7 +110,7 @@ function Invoke-NightlyUpdate {
     $savedMods = $Target -eq 'server' ? ($Config.CustomServerMods ?? @()) : ($Config.CustomClientMods ?? @())
     $customModTempDir = Join-Path $script:TempDir 'nightly-custom-mods'
 
-    if (Test-Path -LiteralPath $customModTempDir) {
+    if ($customModTempDir -and (Test-Path -LiteralPath $customModTempDir)) {
         Remove-Item -LiteralPath $customModTempDir -Recurse -Force
     }
 
@@ -302,7 +302,7 @@ function Invoke-NightlyUpdate {
     Save-Config -Config $Config
 
     # Clean up
-    if (Test-Path -LiteralPath $customModTempDir) {
+    if ($customModTempDir -and (Test-Path -LiteralPath $customModTempDir)) {
         try { Remove-Item -LiteralPath $customModTempDir -Recurse -Force } catch {}
     }
     if ($nightlyRollbackDir -and (Test-Path -LiteralPath $nightlyRollbackDir)) {

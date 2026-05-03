@@ -32,7 +32,7 @@ function Get-ModBaseName {
     $name = $FileName -replace '\.jar$', ''
 
     # Strip everything from the first occurrence of -<digit>, _<digit>, or -mc
-    $name = $name -replace '[-_](\d|mc).*$', ''
+    $name = $name -replace '(?i)[-_](mc|\d).*$', ''
 
     return $name.ToLower()
 }

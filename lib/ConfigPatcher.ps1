@@ -290,16 +290,21 @@ function Test-ConfigPatches {
         $escapedKey = [regex]::Escape($patch.Key)
         $pattern = "^\s*${escapedKey}\s*="
         $currentValue = '(not found)'
+        $currentSection = ''
+        $inTargetSection = [string]::IsNullOrEmpty($patch.Section)
 
         foreach ($line in $lines) {
-            if ($line -match $pattern) {
-                # Extract current value after the = sign
+            if ($line -match '^\s*"?([^"{}=#]+)"?\s*\{') {
+                $currentSection = $Matches[1].Trim()
+                if (-not [string]::IsNullOrEmpty($patch.Section)) {
+                    $inTargetSection = $currentSection -eq $patch.Section
+                }
+            }
+            if ($inTargetSection -and $line -match $pattern) {
                 $currentValue = ($line -split '=', 2)[1].Trim()
                 break
             }
         }
-
-        Write-Info "  Current: $($patch.Key)=$currentValue"
         Write-Info "  Would be: $($patch.Key)=$($patch.Value)"
         $desc = $patch.Description ? "  ($($patch.Description))" : ''
         if ($desc) { Write-Info $desc }
@@ -732,7 +737,35 @@ function Invoke-ConfigPatchMenu {
                         FilePath    = 'config/GregTech/Pollution.cfg'
                         Key         = 'B:"Activate Pollution"'
                         Value       = 'false'
-                        Description = 'Disable pollution'
+                        Description = 'Disable GregTech pollution'
+                    }
+                    [PSCustomObject]@{
+                        Name        = 'Disable mob griefing'
+                        FilePath    = 'config/GregTech/general.cfg'
+                        Key         = 'B:mobGriefing'
+                        Value       = 'false'
+                        Description = 'Prevent mobs from destroying blocks'
+                    }
+                    [PSCustomObject]@{
+                        Name        = 'Disable GT explosions'
+                        FilePath    = 'config/GregTech/general.cfg'
+                        Key         = 'B:DoExplosions'
+                        Value       = 'false'
+                        Description = 'Disable GregTech machine explosions'
+                    }
+                    [PSCustomObject]@{
+                        Name        = 'Disable IC2 rubber tree spawn'
+                        FilePath    = 'config/IC2.cfg'
+                        Key         = 'B:rubberTreeSpawn'
+                        Value       = 'false'
+                        Description = 'Stop IC2 rubber trees from spawning (GT rubber is used instead)'
+                    }
+                    [PSCustomObject]@{
+                        Name        = 'Disable Thaumcraft nodes drain'
+                        FilePath    = 'config/Thaumcraft.cfg'
+                        Key         = 'B:NODE_DRAIN'
+                        Value       = 'false'
+                        Description = 'Prevent aura nodes from draining each other'
                     }
                 )
 

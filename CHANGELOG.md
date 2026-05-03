@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.1.2.7-beta] - 2026-05-03
+
+### Fixed
+- Get-ModBaseName regex is now case-insensitive - mods like OpenComputers-MC1.7.10 were normalizing to 'opencomputers-mc' instead of 'opencomputers', breaking cross-version matching
+- Test-ConfigPatches now correctly tracks section headers when finding the current value, matching the same section-aware logic used by Set-ConfigValue and Invoke-ConfigPatches
+- NightlyEngine cleanup blocks now null-guard $customModTempDir before calling Test-Path, matching the pattern used elsewhere
+
+### Improved
+- FilePreservation now calls Write-Log on preserve/restore success and failure, making preservation issues visible in log files
+- Log pruning now sorts by filename instead of LastWriteTime for more reliable ordering
+- Config patch template library expanded from 1 to 5 templates (added: disable mob griefing, disable GT explosions, disable IC2 rubber tree spawn, disable Thaumcraft node drain)
+- Preservation lists now include opencomputers/ (both), config/NEI.cfg (client), and maps/ (client)
+
 ## [0.1.2.6-beta] - 2026-05-02
 
 ### Fixed
@@ -20,6 +33,19 @@
 
 ### Fixed
 - Self-update check now uses semantic version comparison instead of string equality, so local versions newer than the latest GitHub release no longer trigger a false update prompt
+
+## [0.1.2.7-beta] - 2026-05-03
+
+### Fixed
+- Get-ModBaseName regex is now case-insensitive - mods like OpenComputers-MC1.7.10 were normalizing to 'opencomputers-mc' instead of 'opencomputers', breaking cross-version matching
+- Test-ConfigPatches now correctly tracks section headers when finding the current value, matching the same section-aware logic used by Set-ConfigValue and Invoke-ConfigPatches
+- NightlyEngine cleanup blocks now null-guard $customModTempDir before calling Test-Path, matching the pattern used elsewhere
+
+### Improved
+- FilePreservation now calls Write-Log on preserve/restore success and failure, making preservation issues visible in log files
+- Log pruning now sorts by filename instead of LastWriteTime for more reliable ordering
+- Config patch template library expanded from 1 to 5 templates (added: disable mob griefing, disable GT explosions, disable IC2 rubber tree spawn, disable Thaumcraft node drain)
+- Preservation lists now include opencomputers/ (both), config/NEI.cfg (client), and maps/ (client)
 
 ## [0.1.2.6-beta] - 2026-05-02
 

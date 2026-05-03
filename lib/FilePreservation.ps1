@@ -26,6 +26,7 @@ function Get-ServerPreservationList {
         'banned-ips.json'
         'usercache.json'
         'server.properties'
+        'opencomputers'
     )
 }
 
@@ -42,6 +43,9 @@ function Get-ClientPreservationList {
         'optionsof.txt'
         'optionsnf.txt'
         'resourcepacks'
+        'opencomputers'
+        'config/NEI.cfg'
+        'maps'
     )
 }
 
@@ -93,9 +97,11 @@ function Invoke-PreserveFiles {
                 }
 
                 Write-Info "Preserved: $item"
+                Write-Log "[PRESERVE] Preserved: $item"
             }
             catch {
                 Write-Err "Failed to preserve '$item': $($_.Exception.Message)"
+                Write-Log "[ERROR] Preserve failed for '$item': $($_.Exception.ToString())"
                 Write-Log "[ERROR] Preservation failed for '$item': $($_.Exception.ToString())"
                 $failedItems += $item
             }
@@ -152,9 +158,11 @@ function Invoke-RestoreFiles {
                 }
 
                 Write-Info "Restored: $item"
+                Write-Log "[RESTORE] Restored: $item"
             }
             catch {
                 Write-Err "Failed to restore '$item': $($_.Exception.Message)"
+                Write-Log "[ERROR] Restore failed for '$item': $($_.Exception.ToString())"
                 Write-Log "[ERROR] Restoration failed for '$item': $($_.Exception.ToString())"
             }
         }

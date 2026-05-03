@@ -52,7 +52,7 @@ function Initialize-Logging {
     $initMessage | Out-File -FilePath $script:LogFile -Encoding UTF8
 
     # Prune old logs: keep only the 20 most recent .log files
-    $logFiles = Get-ChildItem -LiteralPath $logDir -Filter '*.log' | Sort-Object LastWriteTime
+    $logFiles = Get-ChildItem -LiteralPath $logDir -Filter '*.log' | Sort-Object Name
     $maxLogs = 20
     if ($logFiles.Count -gt $maxLogs) {
         $filesToDelete = $logFiles | Select-Object -First ($logFiles.Count - $maxLogs)
