@@ -8,6 +8,7 @@
 #   - mods/, config/, libraries/ directories exist
 #   - Mod count (warn if < 400 JARs)
 #   - GregTech JAR present (core mod)
+#   - Duplicate mods (same base name, different versions)
 #   - Target-specific: JourneyMapServer (server), options.txt (client)
 # ============================================================================
 
@@ -102,6 +103,34 @@ function Invoke-Verification {
             Write-Success "options.txt exists"
         } else {
             Write-Warn "options.txt is MISSING (may need first client launch to generate)"
+        }
+    }
+
+    # Check for duplicate mods (same base name, different versions)
+    if (Test-Path -LiteralPath $modsPath) {
+        $modJars = Get-ChildItem -LiteralPath $modsPath -Filter '*.jar' -File
+        $baseNameMap = @{}  # baseName -> list of filenames
+
+        foreach ($jar in $modJars) {
+            $baseName = Get-ModBaseName -FileName $jar.Name
+            if (-not $baseNameMap.ContainsKey($baseName)) {
+                $baseNameMap[$baseName] = @()
+            }
+            $baseNameMap[$baseName] += $jar.Name
+        }
+
+        $duplicates = $baseNameMap.GetEnumerator() | Where-Object { $_.Value.Count -gt 1 }
+        if ($duplicates) {
+            $dupCount = @($duplicates).Count
+            Write-Warn "Found $dupCount mod(s) with multiple versions:"
+            foreach ($dup in $duplicates) {
+                $files = $dup.Value | Sort-Object
+                Write-Host "    * $($files -join ', ')" -ForegroundColor DarkYellow
+            }
+            Write-Warn "Multiple versions of the same mod can cause crashes. Remove the older version(s)."
+            $allPassed = $false
+        } else {
+            Write-Success "No duplicate mods detected"
         }
     }
 

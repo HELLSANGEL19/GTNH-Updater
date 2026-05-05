@@ -46,6 +46,8 @@ function Show-MainMenu {
     $channel = $Config.DefaultChannel ?? 'stable'
     $latestStable = $script:CachedLatestVersion ? $script:CachedLatestVersion : '(not checked)'
     $isStableChannel = $channel -eq 'stable'
+    $hasServer = -not [string]::IsNullOrEmpty($Config.ServerPath)
+    $hasClient = -not [string]::IsNullOrEmpty($Config.ClientInstancePath)
 
     # Determine what "latest" means for the current channel
     $latestForChannel = if ($isStableChannel) { $script:CachedLatestVersion } else { $script:CachedLatestNightly }
@@ -54,6 +56,7 @@ function Show-MainMenu {
     $normalizeVer = { param($v) if ($v) { $v.Trim().TrimStart('v', 'V') } else { $null } }
 
     # Server version display
+    if ($hasServer) {
     Write-Host "  Server:         " -NoNewline -ForegroundColor Gray
     $serverNorm = & $normalizeVer $Config.InstalledServerVersion
     $latestNorm = & $normalizeVer $latestForChannel
@@ -66,8 +69,10 @@ function Show-MainMenu {
     } else {
         Write-Host "$serverVer" -ForegroundColor Green
     }
+    } # end if ($hasServer)
 
     # Client version display
+    if ($hasClient) {
     Write-Host "  Client:         " -NoNewline -ForegroundColor Gray
     $clientNorm = & $normalizeVer $Config.InstalledClientVersion
     if ($clientNorm -and $latestNorm -and $clientNorm -eq $latestNorm) {
@@ -79,6 +84,7 @@ function Show-MainMenu {
     } else {
         Write-Host "$clientVer" -ForegroundColor Green
     }
+    } # end if ($hasClient)
 
     Write-Host ""
     Write-Host "  Latest stable:  " -NoNewline -ForegroundColor Gray
@@ -114,26 +120,11 @@ function Show-MainMenu {
         Write-Host ($summaryParts -join '  |  ') -ForegroundColor DarkCyan
     }
 
-    # Show configured paths (abbreviated to last 2 folder segments)
-    # Only show if one target is not configured (helps user notice)
-    $abbreviatePath = {
-        param($p)
-        if (-not $p) { return '(not set)' }
-        $parts = $p -split '[/\\]' | Where-Object { $_ -ne '' }
-        if ($parts.Count -ge 2) { return "...\$($parts[-2])\$($parts[-1])" }
-        return $p
-    }
-    $hasServer = -not [string]::IsNullOrEmpty($Config.ServerPath)
-    $hasClient = -not [string]::IsNullOrEmpty($Config.ClientInstancePath)
-    if (-not $hasServer -or -not $hasClient) {
-        if (-not $hasServer) {
-            Write-Host "  Server:         " -NoNewline -ForegroundColor DarkGray
-            Write-Host "(not configured)" -ForegroundColor DarkGray
-        }
-        if (-not $hasClient) {
-            Write-Host "  Client:         " -NoNewline -ForegroundColor DarkGray
-            Write-Host "(not configured)" -ForegroundColor DarkGray
-        }
+    if (-not $hasServer -and -not $hasClient) {
+        Write-Host "  Server:         " -NoNewline -ForegroundColor DarkGray
+        Write-Host "(not configured)" -ForegroundColor DarkGray
+        Write-Host "  Client:         " -NoNewline -ForegroundColor DarkGray
+        Write-Host "(not configured)" -ForegroundColor DarkGray
     }
 
     # Version mismatch warning
@@ -160,7 +151,9 @@ function Invoke-TargetSelection {
     .SYNOPSIS
         Prompt for update target selection.
     .DESCRIPTION
-        Asks user to choose [1] Server only, [2] Client only, [3] Both.
+        If only one target is configured, auto-selects it without prompting.
+        If both are configured, asks user to choose [1] Server only,
+        [2] Client only, [3] Both.
         Backup warnings are shown later in the engine, right before applying.
     .PARAMETER Config
         The config PSCustomObject.
@@ -183,39 +176,37 @@ function Invoke-TargetSelection {
         return $result
     }
 
+    # If only one target is configured, auto-select it
+    if ($hasServer -and -not $hasClient) {
+        $result.Server = $true
+        Write-Info "Updating server (only target configured)."
+        return $result
+    }
+    if ($hasClient -and -not $hasServer) {
+        $result.Client = $true
+        Write-Info "Updating client (only target configured)."
+        return $result
+    }
+
+    # Both configured - ask user
     Write-Header "Select Update Target"
     Write-Host ""
 
-    if ($hasServer) { Write-MenuOption "1" "Server only" }
-    if ($hasClient) { Write-MenuOption "2" "Client only" }
-    if ($hasServer -and $hasClient) { Write-MenuOption "3" "Both server and client" }
+    Write-MenuOption "1" "Server only"
+    Write-MenuOption "2" "Client only"
+    Write-MenuOption "3" "Both server and client"
     Write-MenuOption "R" "Return to main menu"
 
     $choice = Read-MenuChoice "Select target"
 
     switch ($choice) {
         '1' {
-            if (-not $hasServer) {
-                Write-Err "No server path configured."
-                Wait-ForKey
-                return $result
-            }
             $result.Server = $true
         }
         '2' {
-            if (-not $hasClient) {
-                Write-Err "No client path configured."
-                Wait-ForKey
-                return $result
-            }
             $result.Client = $true
         }
         '3' {
-            if (-not $hasServer -or -not $hasClient) {
-                Write-Err "Both server and client paths must be configured for this option."
-                Wait-ForKey
-                return $result
-            }
             $result.Server = $true
             $result.Client = $true
         }
@@ -252,7 +243,8 @@ function Invoke-SettingsMenu {
         Write-MenuOption "4" "Config patches"
         Write-MenuOption "5" "Backups and cache"
         Write-MenuOption "6" "Re-run setup wizard"
-        Write-MenuOption "7" "Export/Import config"
+        Write-MenuOption "E" "Export config"
+        Write-MenuOption "I" "Import config"
         Write-Host ""
         Write-MenuOption "R" "Return to main menu"
 
@@ -279,8 +271,34 @@ function Invoke-SettingsMenu {
                 $Config = Invoke-InteractiveSetup -ExistingConfig $Config
                 Wait-ForKey
             }
-            '7' {
-                Invoke-ExportImportMenu -Config $Config
+            { $_ -eq 'E' -or $_ -eq 'e' } {
+                $defaultExport = Join-Path $script:ScriptDir 'gtnh-config-export.json'
+                $exportPath = Read-UserInput "Export path" -Default $defaultExport
+                if ($exportPath) {
+                    Export-ConfigFile -Config $Config -ExportPath $exportPath
+                }
+                Wait-ForKey
+            }
+            { $_ -eq 'I' -or $_ -eq 'i' } {
+                $importPath = Read-UserInput "Path to config file to import"
+                if ($importPath -and (Test-Path -LiteralPath $importPath)) {
+                    $imported = Import-ConfigFile -ImportPath $importPath
+                    if ($null -ne $imported) {
+                        $imported = Repair-Config -Config $imported
+                        Save-Config -Config $imported
+                        $imported.PSObject.Properties | ForEach-Object {
+                            if ($Config.PSObject.Properties.Name -contains $_.Name) {
+                                $Config.$($_.Name) = $_.Value
+                            } else {
+                                $Config | Add-Member -NotePropertyName $_.Name -NotePropertyValue $_.Value -Force
+                            }
+                        }
+                        Write-Success "Config imported and saved. Paths may need updating for this machine."
+                    }
+                } else {
+                    Write-Warn "File not found."
+                }
+                Wait-ForKey
             }
             { $_ -eq 'R' -or $_ -eq 'r' } {
                 return
@@ -329,8 +347,13 @@ function Invoke-InstancePathsMenu {
 
         switch ($choice) {
             '1' {
-                Write-Host '  Example: E:\AMPDatastore\Instances\GTNH01\Minecraft' -ForegroundColor Cyan
-                Write-Host '  Example: D:\Games\GTNH\server' -ForegroundColor Cyan
+                if ($IsWindows) {
+                    Write-Host '  Example: E:\AMPDatastore\Instances\GTNH01\Minecraft' -ForegroundColor Cyan
+                    Write-Host '  Example: D:\Games\GTNH\server' -ForegroundColor Cyan
+                } else {
+                    Write-Host '  Example: /home/you/servers/GTNH' -ForegroundColor Cyan
+                    Write-Host '  Example: /opt/minecraft/gtnh-server' -ForegroundColor Cyan
+                }
                 $newPath = Read-UserInput "Enter new server path" -Default $Config.ServerPath
                 if ($newPath -and (Test-Path -LiteralPath $newPath)) {
                     if (Test-GtnhPath -Path $newPath -Target 'server') {
@@ -345,8 +368,13 @@ function Invoke-InstancePathsMenu {
                 Wait-ForKey
             }
             '2' {
-                Write-Host '  Example: C:\Users\You\AppData\Roaming\PrismLauncher\instances\GTNH\.minecraft' -ForegroundColor Cyan
-                Write-Host '  Example: D:\MultiMC\instances\GTNH\.minecraft' -ForegroundColor Cyan
+                if ($IsWindows) {
+                    Write-Host '  Example: C:\Users\You\AppData\Roaming\PrismLauncher\instances\GTNH\.minecraft' -ForegroundColor Cyan
+                    Write-Host '  Example: D:\MultiMC\instances\GTNH\.minecraft' -ForegroundColor Cyan
+                } else {
+                    Write-Host '  Example: ~/.local/share/PrismLauncher/instances/GTNH/.minecraft' -ForegroundColor Cyan
+                    Write-Host '  Example: ~/Games/MultiMC/instances/GTNH/.minecraft' -ForegroundColor Cyan
+                }
                 Write-Info "Must point to the .minecraft folder, not the instance root."
                 $newPath = Read-UserInput "Enter new client .minecraft path" -Default $Config.ClientInstancePath
                 if ($newPath -and (Test-Path -LiteralPath $newPath)) {
@@ -362,12 +390,20 @@ function Invoke-InstancePathsMenu {
                 Wait-ForKey
             }
             '3' {
-                Write-Host '  Example: C:\Program Files\Java\jdk-21\bin\java.exe' -ForegroundColor Cyan
-                Write-Host '  Example: C:\Program Files\Eclipse Adoptium\jdk-21\bin\java.exe' -ForegroundColor Cyan
-                $newPath = Read-UserInput "Enter full path to java.exe" -Default $Config.JavaPath
+                if ($IsWindows) {
+                    Write-Host '  Example: C:\Program Files\Java\jdk-21\bin\java.exe' -ForegroundColor Cyan
+                    Write-Host '  Example: C:\Program Files\Eclipse Adoptium\jdk-21\bin\java.exe' -ForegroundColor Cyan
+                } else {
+                    Write-Host '  Example: /usr/lib/jvm/java-21-openjdk/bin/java' -ForegroundColor Cyan
+                    Write-Host '  Example: /usr/lib/jvm/temurin-21-jdk/bin/java' -ForegroundColor Cyan
+                }
+                $javaBinaryName = if ($IsWindows) { 'java.exe' } else { 'java' }
+                $newPath = Read-UserInput "Enter full path to $javaBinaryName" -Default $Config.JavaPath
                 if ($newPath) {
-                    if (-not ($newPath -match '[/\\]java\.exe$')) {
-                        Write-Warn "Path should end with java.exe (not javaw.exe or a folder)."
+                    $javaPattern = if ($IsWindows) { '[/\\]java\.exe$' } else { '[/\\]java$' }
+                    if (-not ($newPath -match $javaPattern)) {
+                        $warnMsg = if ($IsWindows) { "Path should end with java.exe (not javaw.exe or a folder)." } else { "Path should end with the java binary (not a folder)." }
+                        Write-Warn $warnMsg
                     }
                     if (Test-Path -LiteralPath $newPath) {
                         $Config.JavaPath = $newPath
@@ -516,10 +552,13 @@ function Invoke-UpdatePreferencesMenu {
                 Write-Host ""
                 Write-Host '  Example: 2.8.4' -ForegroundColor Cyan
                 Write-Host '  Example: 2.8.0-beta-4' -ForegroundColor Cyan
-                $newVer = Read-UserInput "GTNH version"
-                if ($newVer -and $newVer -notmatch '^\d+\.\d+') {
-                    Write-Warn "That doesn't look like a version number. Expected format: X.Y.Z"
-                }
+                $newVer = $null
+                do {
+                    $input = Read-UserInput "GTNH version"
+                    if (-not $input) { break }
+                    if ($input -match '^\d+\.\d+\.\d+') { $newVer = $input }
+                    else { Write-Warn "Please enter a full version like 2.8.4, not just a number." }
+                } while (-not $newVer)
                 if ($newVer) {
                     Write-Info "Apply to: [1] Server, [2] Client, [3] Both"
                     $verTarget = Read-MenuChoice "Target"
@@ -555,12 +594,31 @@ function Invoke-CustomModsMenu {
     <#
     .SYNOPSIS
         Sub-menu for choosing server or client custom mods management.
+        Auto-selects if only one target is configured.
     .PARAMETER Config
         The config PSCustomObject.
     #>
     param(
         [Parameter(Mandatory)][PSCustomObject]$Config
     )
+
+    $hasServer = -not [string]::IsNullOrEmpty($Config.ServerPath)
+    $hasClient = -not [string]::IsNullOrEmpty($Config.ClientInstancePath)
+
+    # Auto-select if only one target is configured
+    if ($hasServer -and -not $hasClient) {
+        Invoke-CustomModSettingsMenu -Config $Config -Target 'server'
+        return
+    }
+    if ($hasClient -and -not $hasServer) {
+        Invoke-CustomModSettingsMenu -Config $Config -Target 'client'
+        return
+    }
+    if (-not $hasServer -and -not $hasClient) {
+        Write-Warn "No server or client paths configured."
+        Wait-ForKey
+        return
+    }
 
     while ($true) {
         Write-Header "Settings > Custom Mods"
@@ -775,6 +833,7 @@ function Invoke-CustomModSettingsMenu {
         Write-MenuOption "S" "Scan for custom mods (compares against official mod list)"
         Write-MenuOption "B" "Browse mods/ folder and pick"
         Write-MenuOption "A" "Add manually (type filenames)"
+        Write-MenuOption "V" "Validate (check for missing/stale entries)"
         Write-MenuOption "D" "Remove individual mod"
         Write-MenuOption "C" "Clear all custom $($label.ToLower()) mods"
         Write-MenuOption "R" "Return"
@@ -783,9 +842,10 @@ function Invoke-CustomModSettingsMenu {
 
         switch ($choice) {
             { $_ -eq 'S' -or $_ -eq 's' } {
-                # Scan for custom mods by comparing against the official mod list
-                $installedVer = $Target -eq 'server' ? $Config.InstalledServerVersion : $Config.InstalledClientVersion
-                if ([string]::IsNullOrEmpty($installedVer) -or $installedVer -eq 'unknown') {
+                # Scan for custom mods by downloading the pack zip and comparing filenames
+                $installedVer = if ($Target -eq 'server') { $Config.InstalledServerVersion } else { $Config.InstalledClientVersion }
+                $installedVer = if ($installedVer) { $installedVer.Trim() } else { '' }
+                if ([string]::IsNullOrWhiteSpace($installedVer) -or $installedVer -eq 'unknown') {
                     Write-Warn "No installed version known for $label. Set it in Update Preferences first."
                     Wait-ForKey
                     continue
@@ -802,29 +862,104 @@ function Invoke-CustomModSettingsMenu {
                     continue
                 }
 
-                # Confirm the version before fetching
-                Write-Info "This will compare your mods/ folder against the official mod list"
-                Write-Info "for GTNH v$installedVer. Make sure this matches your installed version."
-                Write-Host ""
-                if (-not (Confirm-Action "Scan using v$installedVer?")) {
-                    Write-Info "You can change your installed version in Update Preferences."
+                # Find the release matching the installed version
+                $allReleases = $script:CachedWebsiteReleases ?? (Get-WebsiteReleases -PackType ($Config.JavaVersion ?? 'java17'))
+                $matchingRelease = $null
+                if ($allReleases) {
+                    $matchingRelease = $allReleases | Where-Object { $_.Version -eq $installedVer } | Select-Object -First 1
+                }
+
+                if (-not $matchingRelease) {
+                    Write-Warn "Could not find release v${installedVer} in the version list."
+                    Write-Info "Make sure your installed version is correct (Settings > Update Preferences)."
                     Wait-ForKey
                     continue
                 }
 
-                Write-Info "Fetching official mod list for v$installedVer..."
-                $officialMods = Get-OfficialModList -Version $installedVer
-                if (-not $officialMods) {
-                    Write-Warn "Could not fetch the official mod list for v$installedVer."
-                    Write-Info "The version tag may not exist on GitHub, or you may be offline."
+                $zipUrl = if ($Target -eq 'server') { $matchingRelease.ServerZipUrl } else { $matchingRelease.ClientZipUrl }
+                $zipName = if ($Target -eq 'server') { $matchingRelease.ServerZipName } else { $matchingRelease.ClientZipName }
+
+                if (-not $zipUrl) {
+                    Write-Warn "No $label zip URL found for v${installedVer}."
                     Wait-ForKey
                     continue
                 }
 
-                # Build base name set from official mod list
+                # Check if the zip is already cached
+                $cachedZip = Get-CachedFile -FileName $zipName
+                if ($cachedZip) {
+                    Write-Info "Using cached pack zip: $zipName"
+                } else {
+                    Write-Info "This will download the v${installedVer} $($label.ToLower()) pack to compare against your mods."
+                    Write-Info "The download will be cached for future use (including updates)."
+                    Write-Host ""
+                    if (-not (Confirm-Action "Download $zipName?")) {
+                        Wait-ForKey
+                        continue
+                    }
+                }
+
+                # Download (or use cache)
+                $tempDir = $script:TempDir
+                if (-not (Test-Path -LiteralPath $tempDir)) {
+                    New-Item -Path $tempDir -ItemType Directory -Force | Out-Null
+                }
+                $zipPath = Join-Path $tempDir $zipName
+
+                if ($cachedZip) {
+                    try { Copy-Item -LiteralPath $cachedZip -Destination $zipPath -Force }
+                    catch {
+                        Write-Err "Could not copy cached file: $($_.Exception.Message)"
+                        Wait-ForKey
+                        continue
+                    }
+                } else {
+                    $downloaded = Invoke-FileDownload -Url $zipUrl -OutPath $zipPath -Description "v${installedVer} $label pack"
+                    if (-not $downloaded) {
+                        Write-Err "Download failed."
+                        Wait-ForKey
+                        continue
+                    }
+                }
+
+                # Read mod filenames from the zip without extracting
+                Write-Step "Reading mod list from pack zip..."
+                try {
+                    Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+                    $zip = [System.IO.Compression.ZipFile]::OpenRead($zipPath)
+                    $officialModFiles = @()
+                    foreach ($entry in $zip.Entries) {
+                        # Match entries in mods/ directory (could be mods/xxx.jar or folder/mods/xxx.jar)
+                        if ($entry.FullName -match '(?:^|/)mods/([^/]+\.jar)$') {
+                            $officialModFiles += $Matches[1]
+                        }
+                    }
+                    $zip.Dispose()
+                }
+                catch {
+                    Write-Err "Could not read zip file: $($_.Exception.Message)"
+                    Wait-ForKey
+                    continue
+                }
+                finally {
+                    # Clean up temp zip (cache already has it)
+                    if (Test-Path -LiteralPath $zipPath) {
+                        try { Remove-Item -LiteralPath $zipPath -Force } catch {}
+                    }
+                }
+
+                if ($officialModFiles.Count -eq 0) {
+                    Write-Warn "No mods found in the pack zip. The zip structure may be unexpected."
+                    Wait-ForKey
+                    continue
+                }
+
+                Write-Info "Pack contains $($officialModFiles.Count) mods."
+
+                # Build base name set from official mod filenames
                 $officialBaseNames = @{}
-                foreach ($modName in $officialMods) {
-                    $officialBaseNames[(Get-ModBaseName -FileName $modName)] = $true
+                foreach ($modFile in $officialModFiles) {
+                    $officialBaseNames[(Get-ModBaseName -FileName $modFile)] = $true
                 }
 
                 # Build base name set from already-tracked custom mods
@@ -859,14 +994,14 @@ function Invoke-CustomModSettingsMenu {
 
                 if ($candidates.Count -eq 0) {
                     Write-Host ""
-                    Write-Success "No new custom mods found. All untracked mods match the official v$installedVer list."
-                    Write-Info "Official mods: $($officialMods.Count) | Your mods: $($localJars.Count) | Custom tracked: $($alreadyTrackedFound.Count)"
+                    Write-Success "No new custom mods found. All untracked mods match the official v${installedVer} pack."
+                    Write-Info "Pack mods: $($officialModFiles.Count) | Your mods: $($localJars.Count) | Custom tracked: $($alreadyTrackedFound.Count)"
                     Wait-ForKey
                     continue
                 }
 
                 Write-Host ""
-                Write-Info "Found $($candidates.Count) mod(s) not in the official v$installedVer pack:"
+                Write-Info "Found $($candidates.Count) mod(s) not in the official v${installedVer} pack:"
                 Write-Host ""
                 $sortedCandidates = @($candidates | Sort-Object)
                 $tagWidth = "[$($sortedCandidates.Count)]".Length
@@ -876,7 +1011,7 @@ function Invoke-CustomModSettingsMenu {
                 }
                 Write-Host ""
                 Write-Host "  Enter numbers to mark as custom (e.g., 1,3,5), 'a' for all, or Enter to skip: " -NoNewline -ForegroundColor White
-                $scanInput = (Read-Host).Trim()
+                $scanInput = (Read-UserInput "Selection").Trim()
 
                 if ($scanInput) {
                     $toAdd = @()
@@ -947,7 +1082,7 @@ function Invoke-CustomModSettingsMenu {
                 while ($true) {
                     # Apply search filter
                     if ($searchFilter) {
-                        $filtered = @($available | Where-Object { $_ -like "*$searchFilter*" })
+                        $filtered = @($available | Where-Object { $_ -ilike "*$searchFilter*" })
                     } else {
                         $filtered = $available
                     }
@@ -1070,6 +1205,115 @@ function Invoke-CustomModSettingsMenu {
                 }
                 Wait-ForKey
             }
+            { $_ -eq 'V' -or $_ -eq 'v' } {
+                # Validate custom mods list against actual mods/ folder
+                if ($modList.Count -eq 0) {
+                    Write-Info "No custom mods to validate."
+                    Wait-ForKey
+                    continue
+                }
+                if ([string]::IsNullOrEmpty($instancePath) -or -not (Test-Path -LiteralPath $instancePath)) {
+                    Write-Warn "No valid $($label.ToLower()) path configured. Cannot validate."
+                    Wait-ForKey
+                    continue
+                }
+                $modsDir = Join-Path $instancePath 'mods'
+                if (-not (Test-Path -LiteralPath $modsDir)) {
+                    Write-Warn "No mods/ folder found at: $instancePath"
+                    Wait-ForKey
+                    continue
+                }
+
+                # Check each tracked mod against the mods folder
+                $localJarNames = @(Get-ChildItem -LiteralPath $modsDir -Filter '*.jar' -File | ForEach-Object { $_.Name })
+                $localBaseNames = @{}
+                foreach ($jar in $localJarNames) {
+                    $base = Get-ModBaseName -FileName $jar
+                    if (-not $localBaseNames.ContainsKey($base)) {
+                        $localBaseNames[$base] = @()
+                    }
+                    $localBaseNames[$base] += $jar
+                }
+
+                $missing = @()    # Not found at all (no matching base name)
+                $outdated = @()   # Base name exists but filename differs (version changed)
+
+                foreach ($tracked in @($modList)) {
+                    $trackedBase = Get-ModBaseName -FileName $tracked
+                    if ($localBaseNames.ContainsKey($trackedBase)) {
+                        # Base name exists - check if exact filename matches
+                        if ($tracked -notin $localBaseNames[$trackedBase]) {
+                            $currentFile = $localBaseNames[$trackedBase][0]
+                            $outdated += [PSCustomObject]@{
+                                Tracked = $tracked
+                                Current = $currentFile
+                            }
+                        }
+                    } else {
+                        $missing += $tracked
+                    }
+                }
+
+                if ($missing.Count -eq 0 -and $outdated.Count -eq 0) {
+                    Write-Success "All $($modList.Count) custom mod(s) are present and up to date."
+                    Wait-ForKey
+                    continue
+                }
+
+                # Show outdated entries (filename changed, likely version bump)
+                if ($outdated.Count -gt 0) {
+                    Write-Host ""
+                    Write-Warn "$($outdated.Count) mod(s) have updated filenames:"
+                    foreach ($item in $outdated) {
+                        Write-Host "    Tracked: " -NoNewline -ForegroundColor DarkYellow
+                        Write-Host "$($item.Tracked)" -ForegroundColor Yellow
+                        Write-Host "    Current: " -NoNewline -ForegroundColor DarkGray
+                        Write-Host "$($item.Current)" -ForegroundColor Cyan
+                    }
+                }
+
+                # Show missing entries
+                if ($missing.Count -gt 0) {
+                    Write-Host ""
+                    Write-Warn "$($missing.Count) mod(s) not found in mods/ folder:"
+                    foreach ($mod in $missing) {
+                        Write-Host "    - $mod" -ForegroundColor DarkYellow
+                    }
+                }
+
+                Write-Host ""
+                $actions = @()
+                if ($outdated.Count -gt 0) { $actions += 'update filenames' }
+                if ($missing.Count -gt 0) { $actions += 'remove missing' }
+                $actionDesc = $actions -join ' and '
+
+                if (Confirm-Action "Auto-fix? This will $actionDesc.") {
+                    $newList = @($modList)
+
+                    # Update outdated filenames
+                    foreach ($item in $outdated) {
+                        $newList = @($newList | ForEach-Object {
+                            if ($_ -eq $item.Tracked) { $item.Current } else { $_ }
+                        })
+                    }
+
+                    # Remove missing entries
+                    if ($missing.Count -gt 0) {
+                        $newList = @($newList | Where-Object { $_ -notin $missing })
+                    }
+
+                    if ($Target -eq 'server') {
+                        $Config.CustomServerMods = $newList
+                    } else {
+                        $Config.CustomClientMods = $newList
+                    }
+                    Save-Config -Config $Config
+
+                    $fixCount = $outdated.Count + $missing.Count
+                    Write-Success "Fixed $fixCount entry/entries."
+                }
+                Wait-ForKey
+            }
             { $_ -eq 'D' -or $_ -eq 'd' } {
                 $currentList = $Target -eq 'server' ? $Config.CustomServerMods : $Config.CustomClientMods
                 if ($currentList.Count -eq 0) {
@@ -1137,7 +1381,7 @@ function Invoke-CustomModSettingsMenu {
 function Invoke-ViewLogs {
     <#
     .SYNOPSIS
-        List recent log files and offer to open the logs folder in Explorer.
+        List recent log files and offer to open the logs folder in the file manager.
     #>
 
     Write-Header "View Logs"
@@ -1170,7 +1414,8 @@ function Invoke-ViewLogs {
     }
 
     Write-Host ""
-    Write-MenuOption "O" "Open logs folder in Explorer"
+    $openLabel = if ($IsWindows) { "Open logs folder in Explorer" } else { "Open logs folder in file manager" }
+    Write-MenuOption "O" $openLabel
     Write-MenuOption "R" "Return to main menu"
 
     $choice = Read-MenuChoice "Select option"
@@ -1178,11 +1423,11 @@ function Invoke-ViewLogs {
     switch ($choice) {
         { $_ -eq 'O' -or $_ -eq 'o' } {
             try {
-                Start-Process explorer.exe -ArgumentList "`"$logDir`""
+                Open-FolderInFileManager -Path $logDir
                 Write-Success "Opened logs folder."
             }
             catch {
-                Write-Err "Could not open Explorer: $($_.Exception.Message)"
+                Write-Err "Could not open file manager: $($_.Exception.Message)"
             }
         }
     }
@@ -1258,23 +1503,31 @@ function Invoke-ChangelogViewer {
                 Write-Host "  $($Matches[1])" -ForegroundColor Cyan
             }
             elseif ($trimmed -match '^\s*[-*]\s+(.+)') {
-                # Bullet points - clean up markdown links [text](url) -> text
-                $content = $Matches[1] -replace '\[([^\]]+)\]\([^\)]+\)', '$1'
-                # Clean up bold **text** -> text
-                $content = $content -replace '\*\*([^\*]+)\*\*', '$1'
-                # Clean up inline code `text` -> text
-                $content = $content -replace '`([^`]+)`', '$1'
-                Write-Host "    - $content" -ForegroundColor Gray
+                $ctext = $Matches[1] -replace '\[([^\]]+)\]\([^\)]+\)', '$1'
+                $ctext = $ctext -replace '\*\*([^\*]+)\*\*', '$1'
+                $ctext = $ctext -replace '`([^`]+)`', '$1'
+                $words = $ctext -split ' '; $lineOut = "    - "; $first = $true
+                foreach ($word in $words) {
+                    if (-not $first -and ($lineOut.Length + $word.Length + 1) -gt 76) {
+                        Write-Host $lineOut -ForegroundColor Gray; $lineOut = "      $word"
+                    } else { $lineOut += if ($first) { $word } else { " $word" }; $first = $false }
+                }
+                if ($lineOut.Trim()) { Write-Host $lineOut -ForegroundColor Gray }
             }
             elseif ($trimmed -eq '') {
                 Write-Host ""
             }
             else {
-                # Clean up markdown formatting in regular text
                 $clean = $trimmed -replace '\[([^\]]+)\]\([^\)]+\)', '$1'
                 $clean = $clean -replace '\*\*([^\*]+)\*\*', '$1'
                 $clean = $clean -replace '`([^`]+)`', '$1'
-                Write-Host "  $clean" -ForegroundColor Gray
+                $words = $clean -split ' '; $lineOut = "  "; $first = $true
+                foreach ($word in $words) {
+                    if (-not $first -and ($lineOut.Length + $word.Length + 1) -gt 76) {
+                        Write-Host $lineOut -ForegroundColor Gray; $lineOut = "  $word"
+                    } else { $lineOut += if ($first) { $word } else { " $word" }; $first = $false }
+                }
+                if ($lineOut.Trim()) { Write-Host $lineOut -ForegroundColor Gray }
             }
         }
     } else {
@@ -1635,7 +1888,16 @@ function Invoke-UpdateHistory {
     Write-Host "  $('-' * 72)" -ForegroundColor DarkGray
 
     foreach ($entry in $entries) {
-        $date = $entry.Date ? $entry.Date.Substring(0, [math]::Min(19, $entry.Date.Length)) : '(unknown)'
+        # Handle Date being either a DateTime object or a string
+        $dateStr = '(unknown)'
+        if ($entry.Date) {
+            if ($entry.Date -is [datetime]) {
+                $dateStr = $entry.Date.ToString('yyyy-MM-dd HH:mm:ss')
+            } else {
+                $dateStr = "$($entry.Date)".Substring(0, [math]::Min(19, "$($entry.Date)".Length))
+            }
+        }
+        $date = $dateStr
         $version = ($entry.Version ?? '(unknown)').PadRight(22)
         $channel = ($entry.Channel ?? '(unknown)').PadRight(14)
         $target = $entry.Target ?? '(unknown)'
@@ -1679,13 +1941,15 @@ function Show-HelpScreen {
     Write-Host "  Stable: shows a version picker with all releases (stable + beta)," -ForegroundColor Gray
     Write-Host "  then downloads a full pack zip with preview before applying." -ForegroundColor Gray
     Write-Host "  Daily/Experimental: uses the GTNH updater JAR (needs Java 21+)." -ForegroundColor Gray
+    Write-Host "  If only one target is configured, it's selected automatically." -ForegroundColor Gray
     Write-Host ""
 
     Write-Host "  " -NoNewline
     Write-Host "Custom Mods" -ForegroundColor Cyan
     Write-Host "  Mods you added that aren't part of GTNH. Add them in Settings" -ForegroundColor Gray
-    Write-Host "  so they're preserved when you update. Use Browse to pick from" -ForegroundColor Gray
-    Write-Host "  your mods/ folder instead of typing filenames." -ForegroundColor Gray
+    Write-Host "  so they're preserved when you update. Use Scan to auto-detect" -ForegroundColor Gray
+    Write-Host "  them, or Browse to pick from your mods/ folder." -ForegroundColor Gray
+    Write-Host "  Use Validate to fix stale entries after updating mods manually." -ForegroundColor Gray
     Write-Host ""
 
     Write-Host "  " -NoNewline
@@ -1709,13 +1973,67 @@ function Show-HelpScreen {
 
     Write-Host "  " -NoNewline
     Write-Host "Tips" -ForegroundColor Cyan
-    Write-Host "  Use /text to search in any browse list." -ForegroundColor Gray
-    Write-Host "  Type comma-separated numbers to select multiple items (1,3,5)." -ForegroundColor Gray
+    Write-Host "  * Use /text to search in any browse list." -ForegroundColor Gray
+    Write-Host "  * Type comma-separated numbers to select multiple items (1,3,5)." -ForegroundColor Gray
+    Write-Host "  * Press Enter on a prompt to accept the default value [shown]." -ForegroundColor Gray
+    Write-Host "  * Startup warnings (stale mods, missing paths) can be fixed in Settings." -ForegroundColor Gray
     Write-Host ""
 
     Wait-ForKey
 }
 
+function Update-VersionCache {
+    <#
+    .SYNOPSIS
+        Refresh the cached latest stable, beta, nightly version info and full releases array.
+    .PARAMETER Config
+        The config PSCustomObject.
+    #>
+    param([Parameter(Mandatory)][PSCustomObject]$Config)
+
+    try {
+        $websiteReleases = Get-WebsiteReleases -PackType ($Config.JavaVersion ?? 'java17')
+        if ($websiteReleases -and $websiteReleases.Count -gt 0) {
+            # Cache full releases array so update flow can reuse it without a second fetch
+            $script:CachedWebsiteReleases = $websiteReleases
+            $latestStableEntry = $websiteReleases | Where-Object { $_.Type -eq 'Stable' } | Select-Object -First 1
+            if ($latestStableEntry) {
+                $script:CachedLatestVersion = $latestStableEntry.Version
+                Write-Log "[MAIN] Latest stable version: $($script:CachedLatestVersion)"
+            }
+            $latestBetaEntry = $websiteReleases | Where-Object { $_.Type -eq 'Beta' } | Select-Object -First 1
+            if ($latestBetaEntry) {
+                $betaIdx = [array]::IndexOf($websiteReleases, $latestBetaEntry)
+                $stableIdx = if ($latestStableEntry) { [array]::IndexOf($websiteReleases, $latestStableEntry) } else { $websiteReleases.Count }
+                if ($betaIdx -lt $stableIdx) {
+                    $script:CachedLatestBeta = $latestBetaEntry.Version
+                    Write-Log "[MAIN] Latest beta: $($script:CachedLatestBeta)"
+                }
+            }
+        }
+    }
+    catch {
+        Write-Log "[WARN] Version check failed: $($_.Exception.Message)"
+        try {
+            $latestRelease = Get-LatestStableRelease
+            if ($latestRelease) { $script:CachedLatestVersion = $latestRelease.Version }
+        }
+        catch { Write-Log "[WARN] Stable version fallback also failed: $($_.Exception.Message)" }
+    }
+
+    $currentChannel = $Config.DefaultChannel ?? 'stable'
+    if ($currentChannel -ne 'stable') {
+        try {
+            $nightlyReleases = Invoke-GitHubApi -Uri 'https://api.github.com/repos/GTNewHorizons/GT-New-Horizons-Modpack/releases?per_page=1'
+            if ($nightlyReleases -and $nightlyReleases.Count -gt 0) {
+                $script:CachedLatestNightly = $nightlyReleases[0].tag_name
+                Write-Log "[MAIN] Latest daily: $($script:CachedLatestNightly)"
+            }
+        }
+        catch { Write-Log "[WARN] Daily build check failed: $($_.Exception.Message)" }
+    }
+
+}
 function Invoke-MainLoop {
     <#
     .SYNOPSIS
@@ -1775,7 +2093,7 @@ function Invoke-MainLoop {
         $config = Repair-Config -Config $config
 
         # Log config context for troubleshooting (redact usernames from paths)
-        $redactPath = { param($p) if ($p) { $p -replace '\\Users\\[^\\]+', '\Users\***' } else { '(not set)' } }
+        $redactPath = { param($p) if ($p) { $p -replace '\\Users\\[^\\]+', '\Users\***' -replace '/home/[^/]+', '/home/***' } else { '(not set)' } }
         Write-Log "[CONFIG] Server path: $(& $redactPath $config.ServerPath)"
         Write-Log "[CONFIG] Client path: $(& $redactPath $config.ClientInstancePath)"
         Write-Log "[CONFIG] Java path: $(& $redactPath $config.JavaPath)"
@@ -1798,7 +2116,7 @@ function Invoke-MainLoop {
             # Show brief changelog from the bundled CHANGELOG.md if it exists
             $changelogPath = Join-Path $script:ScriptDir 'CHANGELOG.md'
             if (Test-Path -LiteralPath $changelogPath) {
-                $clLines = Get-Content -LiteralPath $changelogPath -Encoding UTF8 -TotalCount 30
+                $clLines = Get-Content -LiteralPath $changelogPath -Encoding UTF8
                 $inCurrentVersion = $false
                 foreach ($clLine in $clLines) {
                     if ($clLine -match "^\#\#\s+\[$([regex]::Escape($script:UpdaterVersion))") {
@@ -1840,6 +2158,12 @@ function Invoke-MainLoop {
             Write-Info "Update it in Settings > Instance Paths."
             $pathWarnings = $true
         }
+        # Validate Java path (needed for daily/experimental updates)
+        if (-not [string]::IsNullOrEmpty($config.JavaPath) -and -not (Test-Path -LiteralPath $config.JavaPath)) {
+            Write-Warn "Java path no longer exists: $($config.JavaPath)"
+            Write-Info "Update it in Settings > Instance Paths (needed for daily/experimental updates)."
+            $pathWarnings = $true
+        }
         if ($pathWarnings) {
             Write-Host ""
             Wait-ForKey
@@ -1870,64 +2194,45 @@ function Invoke-MainLoop {
         $script:CachedLatestBeta = $null
         $script:CachedLatestNightly = $null
         $autoCheck = $config.AutoCheckUpdates ?? $true
-        $isStable = ($config.DefaultChannel ?? 'stable') -eq 'stable'
-        if ($autoCheck) {
-            try {
-                $websiteReleases = Get-WebsiteReleases -PackType ($config.JavaVersion ?? 'java17')
-                if ($websiteReleases -and $websiteReleases.Count -gt 0) {
-                    # Latest stable = first entry with Type 'Stable'
-                    $latestStableEntry = $websiteReleases | Where-Object { $_.Type -eq 'Stable' } | Select-Object -First 1
-                    if ($latestStableEntry) {
-                        $script:CachedLatestVersion = $latestStableEntry.Version
-                        Write-Log "[MAIN] Latest stable version: $($script:CachedLatestVersion)"
-                    }
-                    # Latest beta = first entry with Type 'Beta' (only if it's newer than latest stable)
-                    $latestBetaEntry = $websiteReleases | Where-Object { $_.Type -eq 'Beta' } | Select-Object -First 1
-                    if ($latestBetaEntry) {
-                        # Only show beta if it appears before (newer than) the latest stable on the page
-                        $betaIdx = [array]::IndexOf($websiteReleases, $latestBetaEntry)
-                        $stableIdx = if ($latestStableEntry) { [array]::IndexOf($websiteReleases, $latestStableEntry) } else { $websiteReleases.Count }
-                        if ($betaIdx -lt $stableIdx) {
-                            $script:CachedLatestBeta = $latestBetaEntry.Version
-                            Write-Log "[MAIN] Latest beta: $($script:CachedLatestBeta)"
-                        }
-                    }
-                }
-            }
-            catch {
-                Write-Log "[WARN] Version check failed: $($_.Exception.Message)"
-                # Fallback to the original stable-only check
-                try {
-                    $latestRelease = Get-LatestStableRelease
-                    if ($latestRelease) {
-                        $script:CachedLatestVersion = $latestRelease.Version
-                    }
-                }
-                catch {
-                    Write-Log "[WARN] Stable version fallback also failed: $($_.Exception.Message)"
-                }
-            }
-
-            # For nightly users, also check the latest nightly build from GitHub
-            if (-not $isStable) {
-                try {
-                    $nightlyReleases = Invoke-GitHubApi -Uri 'https://api.github.com/repos/GTNewHorizons/GT-New-Horizons-Modpack/releases?per_page=1'
-                    if ($nightlyReleases -and $nightlyReleases.Count -gt 0) {
-                        $script:CachedLatestNightly = $nightlyReleases[0].tag_name
-                        Write-Log "[MAIN] Latest daily: $($script:CachedLatestNightly)"
-                    }
-                }
-                catch {
-                    Write-Log "[WARN] Daily build check failed: $($_.Exception.Message)"
-                }
-            }
-
-            # Version info is shown on the main menu, no need for a one-liner here
-            # (the main menu shows "-> X.Y.Z available" next to the version)
-        }
+        if ($autoCheck) { Update-VersionCache -Config $config }
 
         # Check for script self-update
         Invoke-ScriptUpdateCheck
+
+        # Auto-validate custom mods list (quick check for stale entries)
+        $customModWarnings = @()
+        foreach ($target in @('server', 'client')) {
+            $modList = if ($target -eq 'server') { $config.CustomServerMods } else { $config.CustomClientMods }
+            $instPath = if ($target -eq 'server') { $config.ServerPath } else { $config.ClientInstancePath }
+
+            if ($modList.Count -eq 0 -or [string]::IsNullOrEmpty($instPath)) { continue }
+            $modsDir = Join-Path $instPath 'mods'
+            if (-not (Test-Path -LiteralPath $modsDir)) { continue }
+
+            $localJarNames = @(Get-ChildItem -LiteralPath $modsDir -Filter '*.jar' -File -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
+            $localBaseNames = @{}
+            foreach ($jar in $localJarNames) {
+                $localBaseNames[(Get-ModBaseName -FileName $jar)] = $jar
+            }
+
+            $staleCount = 0
+            foreach ($tracked in @($modList)) {
+                $trackedBase = Get-ModBaseName -FileName $tracked
+                if (-not $localBaseNames.ContainsKey($trackedBase)) {
+                    $staleCount++
+                } elseif ($tracked -ne $localBaseNames[$trackedBase] -and $tracked -notin $localJarNames) {
+                    $staleCount++
+                }
+            }
+            if ($staleCount -gt 0) {
+                $customModWarnings += "$staleCount $target custom mod(s) are outdated or missing"
+            }
+        }
+        if ($customModWarnings.Count -gt 0) {
+            foreach ($w in $customModWarnings) { Write-Warn $w }
+            Write-Info "Run Settings > Custom Mods > Validate to auto-fix."
+            Write-Host ""
+        }
 
         # Main menu loop
         while ($true) {
@@ -1942,16 +2247,53 @@ function Invoke-MainLoop {
 
                     if ($channel -eq 'stable') {
                         # Fetch all website releases for version picker and downgrade detection
+                        # Use cached releases if available to avoid a redundant fetch
                         Write-Info "Fetching available releases..."
-                        $allReleases = Get-WebsiteReleases -PackType ($config.JavaVersion ?? 'java17')
+                        $allReleases = $script:CachedWebsiteReleases ?? (Get-WebsiteReleases -PackType ($config.JavaVersion ?? 'java17'))
                         if (-not $allReleases -or $allReleases.Count -eq 0) {
                             Write-Err "Could not fetch releases. Check your internet connection."
                             Wait-ForKey
                             break
                         }
 
-                        # Show version picker first (stable + beta/RC releases)
-                        $selectedRelease = Invoke-VersionPicker -Config $config -Releases $allReleases
+                        # Quick update shortcut: if there's a clear newer stable version, offer it directly
+                        $selectedRelease = $null
+                        $latestStableRelease = $allReleases | Where-Object { $_.Type -eq 'Stable' } | Select-Object -First 1
+
+                        if ($latestStableRelease -and $script:CachedLatestVersion) {
+                            # Check if any configured target is behind the latest stable
+                            $serverBehind = (-not [string]::IsNullOrEmpty($config.ServerPath)) -and
+                                            $config.InstalledServerVersion -and
+                                            $config.InstalledServerVersion -ne $script:CachedLatestVersion
+                            $clientBehind = (-not [string]::IsNullOrEmpty($config.ClientInstancePath)) -and
+                                            $config.InstalledClientVersion -and
+                                            $config.InstalledClientVersion -ne $script:CachedLatestVersion
+
+                            if ($serverBehind -or $clientBehind) {
+                                Write-Host ""
+                                Write-Host "  Latest stable: " -NoNewline -ForegroundColor Gray
+                                Write-Host "$($script:CachedLatestVersion)" -ForegroundColor Green
+                                Write-Host ""
+                                Write-MenuOption "Y" "Update to $($script:CachedLatestVersion)"
+                                Write-MenuOption "P" "Pick a different version (beta, older, etc.)"
+                                Write-MenuOption "R" "Return to main menu"
+
+                                $quickChoice = Read-MenuChoice "Choose"
+
+                                if ($quickChoice -eq 'y' -or $quickChoice -eq 'Y') {
+                                    $selectedRelease = $latestStableRelease
+                                } elseif ($quickChoice -eq 'p' -or $quickChoice -eq 'P') {
+                                    $selectedRelease = Invoke-VersionPicker -Config $config -Releases $allReleases
+                                } else {
+                                    break
+                                }
+                            }
+                        }
+
+                        # Fall through to version picker if shortcut didn't apply
+                        if (-not $selectedRelease) {
+                            $selectedRelease = Invoke-VersionPicker -Config $config -Releases $allReleases
+                        }
                         if (-not $selectedRelease) { break }
 
                         $targets = Invoke-TargetSelection -Config $config
@@ -1962,13 +2304,6 @@ function Invoke-MainLoop {
 
                         if ($targets.Server) {
                             Invoke-StableUpdate -Config $config -Target 'server' -Release $selectedRelease -ChannelLabel $channelLabel -WebsiteReleases $allReleases
-                        }
-                        if ($targets.Server -and $targets.Client) {
-                            Write-Host ""
-                            if (-not (Confirm-Action "Continue to client update?")) {
-                                Write-Info "Client update skipped."
-                                $targets.Client = $false
-                            }
                         }
                         if ($targets.Client) {
                             Invoke-StableUpdate -Config $config -Target 'client' -Release $selectedRelease -ChannelLabel $channelLabel -WebsiteReleases $allReleases
@@ -1981,13 +2316,6 @@ function Invoke-MainLoop {
                         if ($targets.Server) {
                             Invoke-NightlyUpdate -Config $config -Target 'server' -Channel $channel
                         }
-                        if ($targets.Server -and $targets.Client) {
-                            Write-Host ""
-                            if (-not (Confirm-Action "Continue to client update?")) {
-                                Write-Info "Client update skipped."
-                                $targets.Client = $false
-                            }
-                        }
                         if ($targets.Client) {
                             Invoke-NightlyUpdate -Config $config -Target 'client' -Channel $channel
                         }
@@ -1999,13 +2327,14 @@ function Invoke-MainLoop {
                         $config = Repair-Config -Config $reloaded
                     }
 
+                    # Remind about version mismatch only if this update *caused* a new mismatch
                     # Remind about version mismatch if only one target was updated
                     if (($targets.Server -xor $targets.Client) -and
                         -not [string]::IsNullOrEmpty($config.InstalledServerVersion) -and
                         -not [string]::IsNullOrEmpty($config.InstalledClientVersion) -and
                         $config.InstalledServerVersion -ne $config.InstalledClientVersion) {
                         Write-Host ""
-                        Write-Warn "Reminder: Server and client are on different versions."
+                        Write-Warn "Reminder: Server and client are now on different versions."
                         Write-Warn "Consider updating the other target to match."
                     }
 
@@ -2019,45 +2348,8 @@ function Invoke-MainLoop {
                     if ($null -ne $reloaded) {
                         $config = Repair-Config -Config $reloaded
                     }
-                    # Fetch version info if not yet cached (handles auto-check toggled on, channel changed, etc.)
-                    $autoCheckNow = $config.AutoCheckUpdates ?? $true
-                    if ($autoCheckNow) {
-                        if (-not $script:CachedLatestVersion) {
-                            try {
-                                $websiteReleases = Get-WebsiteReleases -PackType ($config.JavaVersion ?? 'java17')
-                                if ($websiteReleases -and $websiteReleases.Count -gt 0) {
-                                    $latestStableEntry = $websiteReleases | Where-Object { $_.Type -eq 'Stable' } | Select-Object -First 1
-                                    if ($latestStableEntry) {
-                                        $script:CachedLatestVersion = $latestStableEntry.Version
-                                    }
-                                    $latestBetaEntry = $websiteReleases | Where-Object { $_.Type -eq 'Beta' } | Select-Object -First 1
-                                    if ($latestBetaEntry) {
-                                        $betaIdx = [array]::IndexOf($websiteReleases, $latestBetaEntry)
-                                        $stableIdx = if ($latestStableEntry) { [array]::IndexOf($websiteReleases, $latestStableEntry) } else { $websiteReleases.Count }
-                                        if ($betaIdx -lt $stableIdx) {
-                                            $script:CachedLatestBeta = $latestBetaEntry.Version
-                                        }
-                                    }
-                                }
-                            }
-                            catch {
-                                Write-Log "[WARN] Version check failed: $($_.Exception.Message)"
-                            }
-                        }
-                        $currentChannel = $config.DefaultChannel ?? 'stable'
-                        if ($currentChannel -ne 'stable' -and -not $script:CachedLatestNightly) {
-                            try {
-                                $nightlyReleases = Invoke-GitHubApi -Uri 'https://api.github.com/repos/GTNewHorizons/GT-New-Horizons-Modpack/releases?per_page=1'
-                                if ($nightlyReleases -and $nightlyReleases.Count -gt 0) {
-                                    $script:CachedLatestNightly = $nightlyReleases[0].tag_name
-                                    Write-Log "[MAIN] Latest daily: $($script:CachedLatestNightly)"
-                                }
-                            }
-                            catch {
-                                Write-Log "[WARN] Daily build check failed: $($_.Exception.Message)"
-                            }
-                        }
-                    }
+                    # Refresh version cache if auto-check is on (handles channel change, toggle on, etc.)
+                    if ($config.AutoCheckUpdates ?? $true) { Update-VersionCache -Config $config }
                 }
                 '3' {
                     # View logs

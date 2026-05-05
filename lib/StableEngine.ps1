@@ -269,10 +269,18 @@ function Invoke-StableUpdate {
                 $expectedHash = $Matches[1]
             }
         }
-    }
+        }
     catch {
-        # No hash file available, that's fine
-        Write-Log "[INTEGRITY] No .sha256 sidecar found for $zipName"
+        $errStatus = $null
+        if ($_.Exception.Response) { $errStatus = [int]$_.Exception.Response.StatusCode }
+        if ($errStatus -eq 404 -or $errStatus -eq 403) {
+            # No hash file available - that's fine, skip verification
+            Write-Log "[INTEGRITY] No .sha256 sidecar found for $zipName (HTTP $errStatus)"
+        } else {
+            # Unexpected error - warn the user but don't block the update
+            Write-Warn "Could not fetch integrity hash for $zipName - update will proceed unverified."
+            Write-Log "[INTEGRITY] Hash fetch error for $zipName`: $($_.Exception.Message)"
+        }
     }
 
     $integrityResult = Test-FileIntegrity -FilePath $zipPath -ExpectedHash $expectedHash
@@ -451,7 +459,7 @@ function Invoke-StableUpdate {
         Write-Host ""
         Write-Host "  Any of these your custom mods? They'll be preserved during updates." -ForegroundColor White
         Write-Host "  Enter numbers separated by commas (e.g., 1,3,5), 'a' for all, or Enter to skip: " -NoNewline -ForegroundColor White
-        $markInput = (Read-Host).Trim()
+        $markInput = (Read-UserInput "Mark custom mods").Trim()
 
         if ($markInput) {
             $newCustom = @()
@@ -552,25 +560,25 @@ function Invoke-StableUpdate {
             Write-Host "  Search results for '$searchTerm':" -ForegroundColor White
             $anyFound = $false
             foreach ($mod in ($added | Sort-Object)) {
-                if ($mod -like "*$searchTerm*") {
+                if ($mod -ilike "*$searchTerm*") {
                     Write-Host "    + $mod" -ForegroundColor Green
                     $anyFound = $true
                 }
             }
             foreach ($mod in ($removed | Sort-Object)) {
-                if ($mod -like "*$searchTerm*") {
+                if ($mod -ilike "*$searchTerm*") {
                     Write-Host "    - $mod" -ForegroundColor Red
                     $anyFound = $true
                 }
             }
             foreach ($entry in $updated) {
-                if ($entry.Old -like "*$searchTerm*" -or $entry.New -like "*$searchTerm*") {
+                if ($entry.Old -ilike "*$searchTerm*" -or $entry.New -ilike "*$searchTerm*") {
                     Write-Host "    ~ $($entry.Old) -> $($entry.New)" -ForegroundColor Yellow
                     $anyFound = $true
                 }
             }
             foreach ($mod in ($custom | Sort-Object)) {
-                if ($mod -like "*$searchTerm*") {
+                if ($mod -ilike "*$searchTerm*") {
                     Write-Host "    * $mod" -ForegroundColor Cyan
                     $anyFound = $true
                 }
@@ -612,7 +620,7 @@ function Invoke-StableUpdate {
     Write-Info "Staging folder: $stagingDir"
     Write-Host ""
     Write-MenuOption -Key 'A' -Description 'Apply update'
-    Write-MenuOption -Key 'O' -Description 'Open staging in Explorer'
+    Write-MenuOption -Key 'O' -Description 'Open staging in file manager'
     Write-MenuOption -Key 'C' -Description 'Cancel'
 
     $applyUpdate = $false
@@ -641,8 +649,8 @@ function Invoke-StableUpdate {
                 break
             }
             'O' {
-                Start-Process explorer.exe -ArgumentList "`"$stagingDir`""
-                Write-Info "Opened in Explorer. Choose again when ready."
+                Open-FolderInFileManager -Path $stagingDir
+                Write-Info "Opened in file manager. Choose again when ready."
             }
             'C' {
                 Write-Info "Update cancelled. Staging folder preserved at: $stagingDir"
@@ -699,6 +707,7 @@ function Invoke-StableUpdate {
                     }
                     '2' {
                         # Show current mods that aren't in the new pack as candidates
+                        # Candidates: mods not in the new pack (likely custom). Fall back to all if needed.
                         $candidates = @()
                         if ($stagingModsPath) {
                             $newBaseNamesForPick = @{}
@@ -708,8 +717,14 @@ function Invoke-StableUpdate {
                             $candidates = @($currentJarFiles | Where-Object {
                                 -not $newBaseNamesForPick.ContainsKey((Get-ModBaseName -FileName $_.Name))
                             } | ForEach-Object { $_.Name } | Sort-Object)
+                            if ($candidates.Count -eq 0) {
+                                Write-Info "  (All current mods appear to be pack mods - showing full list)"
+                                $candidates = @($currentJarFiles | ForEach-Object { $_.Name } | Sort-Object)
+                            }
+                        } else {
+                            Write-Info "  (Staging unavailable - showing all current mods)"
+                            $candidates = @($currentJarFiles | ForEach-Object { $_.Name } | Sort-Object)
                         }
-
                         if ($candidates.Count -eq 0) {
                             $candidates = @($currentJarFiles | ForEach-Object { $_.Name } | Sort-Object)
                         }
@@ -890,7 +905,16 @@ function Invoke-StableUpdate {
             Write-Host "  ╔══════════════════════════════════════════════════════════════╗" -ForegroundColor Red
             Write-Host "  ║  CRITICAL: Update failed after folders were deleted!        ║" -ForegroundColor Red
             Write-Host "  ║                                                             ║" -ForegroundColor Red
-            Write-Host "  ║  Error: $(($_.Exception.Message ?? 'Unknown error').PadRight(49).Substring(0,49))║" -ForegroundColor Red
+            $errMsg = $_.Exception.Message ?? 'Unknown error'
+            $errLines = @()
+            # Wrap message into 49-char chunks so the box border stays aligned
+            for ($ci = 0; $ci -lt $errMsg.Length; $ci += 49) {
+                $errLines += $errMsg.Substring($ci, [Math]::Min(49, $errMsg.Length - $ci)).PadRight(49)
+            }
+            if ($errLines.Count -eq 0) { $errLines = @('Unknown error'.PadRight(49)) }
+            foreach ($eLine in $errLines) {
+                Write-Host "  ║  Error: $eLine║" -ForegroundColor Red
+            }
             Write-Host "  ╚══════════════════════════════════════════════════════════════╝" -ForegroundColor Red
             Write-Host ""
             Write-Log "[CRITICAL] Post-deletion failure: $($_.Exception.ToString())"

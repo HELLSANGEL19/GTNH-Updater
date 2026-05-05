@@ -1,18 +1,20 @@
 # GTNH Updater
 
-**Version 0.1.2.7-beta**
+**Version 0.1.3.0-beta**
 
-Automates updating [GregTech: New Horizons](https://www.gtnewhorizons.com/) server and client instances on Windows. Interactive and menu-driven. Works with any server setup and any launcher that uses a standard `.minecraft` folder structure (Prism Launcher, MultiMC, PolyMC, ATLauncher, etc.). Auto-detection is included for AMP (CubeCoders) and common launcher directories, but any instance path can be entered manually.
+Automates updating [GregTech: New Horizons](https://www.gtnewhorizons.com/) server and client instances on Windows and Linux. Interactive and menu-driven. Works with any server setup and any launcher that uses a standard `.minecraft` folder structure (Prism Launcher, MultiMC, PolyMC, ATLauncher, etc.). Auto-detection finds common server paths and launcher directories, but any instance path can be entered manually.
 
 > **Beta**: This tool has been reviewed and tested for correctness but has not yet been validated at scale with real GTNH instances. Please back up your instance before using it. Report issues on GitHub.
 
 ## Requirements
 
-- **Windows 10 or 11**
+- **Windows 10/11 or Linux** (any distro with a desktop environment or headless server)
 - **PowerShell 7** - The launcher will offer to install it for you if it's not found. Or [download it manually](https://github.com/PowerShell/PowerShell/releases).
 - **Java 21+** - Only needed if you use the Daily or Experimental update channels. [Download here](https://adoptium.net/temurin/releases/).
 
 ## Getting Started
+
+### Windows
 
 1. Download or clone this repository
 2. Double-click **`Launch-GTNHUpdater.bat`**
@@ -28,14 +30,42 @@ cd "C:\path\to\GTNHUpdater"
 .\Update-GTNH.ps1
 ```
 
+### Linux
+
+1. Download or clone this repository
+2. Make the launcher executable and run it:
+   ```bash
+   chmod +x Launch-GTNHUpdater.sh
+   ./Launch-GTNHUpdater.sh
+   ```
+   - If PowerShell 7 isn't installed, it will offer to install it via your package manager (apt, dnf, pacman, zypper, or snap)
+3. The setup wizard walks you through everything on first run
+
+Or if you already have `pwsh` installed, run directly:
+
+```bash
+pwsh -File ./Update-GTNH.ps1
+```
+
 ## How It Works
+
+### Setup Wizard
+
+On first run, the wizard asks:
+1. What you manage (server only, client only, or both)
+2. Detects Java installations
+3. Detects GTNH instances (skips server or client steps based on your answer)
+4. Sets preferences (channel, pack type, version)
+5. Optionally configures custom mods and config patches
+
+If you only manage a server, you'll never be asked about client paths. The tool adapts to your setup.
 
 ### Stable Updates
 
 When you select **Update GTNH** with the Stable channel:
 
 1. Shows a **version picker** listing all available releases (stable and beta/RC), newest first
-2. Asks which target (Server, Client, or Both)
+2. If both server and client are configured, asks which target. If only one is configured, it's selected automatically.
 3. Downloads the selected pack (with progress bar and speed display) and verifies integrity
 4. Extracts to a staging folder for preview
 5. Shows a full color-coded mod comparison:
@@ -46,8 +76,8 @@ When you select **Update GTNH** with the Stable channel:
 6. Lets you search mods by name if the list is long
 7. Shows what folders will be deleted
 8. Reminds you to back up before applying
-9. Lets you choose: **Apply**, **Open staging folder in Explorer**, or **Cancel**
-10. If you apply: saves a rollback snapshot, preserves your files, replaces the pack, restores your files, applies config patches, and verifies the result
+9. Lets you choose: **Apply**, **Open staging folder**, or **Cancel**
+10. If you apply: saves a rollback snapshot, preserves your files, replaces the pack, restores your files, applies config patches, and runs verification
 
 You always see what will happen before anything is changed.
 
@@ -55,7 +85,7 @@ You always see what will happen before anything is changed.
 
 When you select Daily or Experimental:
 
-1. Asks which target (Server, Client, or Both)
+1. If both targets are configured, asks which one. Otherwise auto-selects.
 2. Checks that Java 21+ is available
 3. Downloads or updates the official updater JAR
 4. Backs up your custom mods from the saved list
@@ -99,14 +129,24 @@ Mods you have added that are not part of the GTNH pack are preserved during upda
 - **Scan** against the official mod list to automatically find custom mods (compares your mods/ folder against the GitHub mod list for your version)
 - **Browse** the mods/ folder and pick from a list (no typing filenames)
 - **Add manually** by typing filenames (with validation and examples)
+- **Validate** your custom mods list to find stale or outdated entries and auto-fix them (e.g., a mod was updated from v2.0.3 to v2.0.5 and the tracked filename no longer matches)
 
 During stable updates, unknown mods are detected automatically and you can mark them as custom in the preview. For daily/experimental updates, only mods saved in your custom mods list are preserved (there is no preview step), so make sure to add your custom mods in Settings before running a daily update.
 
-If a saved custom mod file is not found (for example, you updated it and the filename changed), the tool will ask you to remove it or pick the replacement.
+On startup, the tool checks your custom mods list against the actual mods/ folder. If any entries are stale (mod removed or filename changed from a version bump), you'll see a warning directing you to Settings > Custom Mods > Validate to review and auto-fix.
+
+### Post-Update Verification
+
+After every update, the tool automatically checks:
+- Critical directories exist (mods/, config/, libraries/)
+- Mod count is reasonable (400+ JARs expected for GTNH)
+- GregTech core mod is present
+- No duplicate mods (catches cases like `xmod-2.0.3.jar` and `xmod-2.0.5.jar` both present)
+- Target-specific files (server.properties, options.txt, etc.)
 
 ### Download Integrity
 
-Downloaded pack zips are verified with SHA256 checksums when available. Corrupted downloads are caught before they can damage your instance, and bad cached files are automatically removed.
+Downloaded pack zips are verified with SHA256 checksums when available. Corrupted downloads are caught before they can damage your instance, and bad cached files are automatically removed. Partial downloads from interrupted connections are cleaned up automatically.
 
 ### Automatic Rollback
 
@@ -114,7 +154,7 @@ Before applying an update, the tool saves a snapshot of everything it's about to
 
 ### Config Export/Import
 
-Moving to a new machine? Export your full configuration (paths, custom mods, patches) to a file and import it on the new machine.
+Moving to a new machine? Export your full configuration (paths, custom mods, patches) to a file and import it on the new machine. Available directly from the Settings menu.
 
 ### GTNH Changelog Viewer
 
@@ -150,13 +190,14 @@ The main menu shows your installed versions, the latest available version, your 
 
 Settings are organized into groups:
 
-- **Instance paths** - Server, client, and Java paths (with examples)
+- **Instance paths** - Server, client, and Java paths (with platform-appropriate examples)
 - **Update preferences** - Default channel, Java version for downloads, installed version, auto-update check
-- **Custom mods** - Browse mods/ folder to pick (with search), add manually, remove, or clear
+- **Custom mods** - Scan, browse, add, validate, remove, or clear (auto-selects server/client if only one is configured)
 - **Config patches** - Browse, add, edit, import/export, test, or clear patches
 - **Backups and cache** - Backup settings, manage backups, manage download cache
 - **Re-run setup wizard** - Start the guided setup again
-- **Export/Import config** - Save or restore your full configuration
+- **Export config [E]** - Save your full configuration to a file
+- **Import config [I]** - Restore configuration from a file
 
 ## Backups
 
@@ -186,12 +227,15 @@ For full protection, maintain your own backups:
 
 | Problem | Solution |
 |---------|----------|
-| "PowerShell 7+ Required" | You used `powershell` instead of `pwsh`. Use the `.bat` launcher or open PowerShell 7 manually. |
+| "PowerShell 7+ Required" | You used `powershell` instead of `pwsh`. Use the launcher (`.bat` on Windows, `Launch-GTNHUpdater.sh` on Linux) or open PowerShell 7 manually. |
 | "Java 21 or newer is required" | Only affects Daily/Experimental channels. Update the Java path in Settings. Stable works with any Java. |
-| Download fails | Check your internet connection. Previously downloaded files are cached and reused. |
+| Download fails or times out | Check your internet connection. Previously downloaded files are cached and reused. API requests time out after 30 seconds. |
 | Update failed after applying | The tool will offer automatic rollback. If that fails, restore from your own backup. |
 | Download integrity check failed | The file may be corrupted. Clear the cache in Settings and try again. |
 | "Another instance may be running" | A previous run crashed without cleaning up. Choose yes to continue. |
+| "Java path no longer exists" | Java was updated or moved. Update the path in Settings > Instance Paths. |
+| Custom mods warning at startup | Some tracked mods have changed. Go to Settings > Custom Mods > Validate to auto-fix. |
+| Duplicate mods detected | Multiple versions of the same mod in your mods/ folder. Remove the older one(s). |
 | Config file is broken | Delete `gtnh-updater-config.json` and re-run. The setup wizard will start fresh. |
 | Want to reset everything | Delete `gtnh-updater-config.json`, `cache/`, `logs/`, and `.temp/`. |
 

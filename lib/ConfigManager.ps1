@@ -38,6 +38,7 @@ function New-DefaultConfig {
         ConfigPatches          = @()
         UpdateHistory          = @()
         ConfigVersion          = 2
+        LastSeenScriptVersion  = ''
     }
 }
 
@@ -90,7 +91,7 @@ function Save-Config {
     )
 
     try {
-        $json = $Config | ConvertTo-Json -Depth 5
+        $json = $Config | ConvertTo-Json -Depth 10
         Set-Content -LiteralPath $script:ConfigPath -Value $json -Encoding UTF8 -Force
     }
     catch {
@@ -210,7 +211,7 @@ function Export-ConfigFile {
     )
 
     try {
-        $json = $Config | ConvertTo-Json -Depth 5
+        $json = $Config | ConvertTo-Json -Depth 10
         Set-Content -LiteralPath $ExportPath -Value $json -Encoding UTF8 -Force
         Write-Success "Config exported to: $ExportPath"
         return $true
@@ -242,6 +243,7 @@ function Import-ConfigFile {
     try {
         $raw = Get-Content -LiteralPath $ImportPath -Raw -ErrorAction Stop
         $config = $raw | ConvertFrom-Json -ErrorAction Stop
+        $config = Repair-Config -Config $config
         Write-Success "Config imported from: $ImportPath"
         return $config
     }

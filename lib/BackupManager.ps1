@@ -110,6 +110,16 @@ function Invoke-ScriptBackup {
     catch {
         Write-Err "Backup failed: $($_.Exception.Message)"
         Write-Log "[ERROR] Backup failed: $($_.Exception.ToString())"
+        # Clean up partial backup to avoid wasting disk space
+        if (Test-Path -LiteralPath $backupPath) {
+            try {
+                Remove-Item -LiteralPath $backupPath -Recurse -Force
+                Write-Log "[BACKUP] Cleaned up partial backup: $backupPath"
+            }
+            catch {
+                Write-Log "[WARN] Could not clean up partial backup: $backupPath"
+            }
+        }
         return $false
     }
 }
@@ -258,7 +268,7 @@ function Invoke-BackupMenu {
         Write-Host ""
         Write-MenuOption -Key 'S' -Description 'Restore a backup'
         Write-MenuOption -Key 'D' -Description "Delete old backups (keep $($Config.BackupRetention ?? 5))"
-        Write-MenuOption -Key 'O' -Description 'Open backup folder in Explorer'
+        Write-MenuOption -Key 'O' -Description 'Open backup folder'
         Write-MenuOption -Key 'R' -Description 'Return'
 
         $choice = Read-MenuChoice -Prompt 'Choose an option'
@@ -316,7 +326,7 @@ function Invoke-BackupMenu {
                 if (-not (Test-Path -LiteralPath $backupDir)) {
                     New-Item -Path $backupDir -ItemType Directory -Force | Out-Null
                 }
-                Start-Process explorer.exe -ArgumentList "`"$backupDir`""
+                Open-FolderInFileManager -Path $backupDir
             }
             'R' {
                 return

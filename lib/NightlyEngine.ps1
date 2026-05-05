@@ -44,6 +44,7 @@ function Invoke-NightlyUpdate {
     # Initialize cleanup variables upfront so finally/cleanup blocks are safe
     $customModTempDir = $null
     $nightlyRollbackDir = $null
+    $preserveTempDir = $null
 
     if ([string]::IsNullOrEmpty($instancePath)) {
         Write-Err "No $Target path configured. Run setup wizard first."
@@ -146,6 +147,28 @@ function Invoke-NightlyUpdate {
         return
     }
 
+    # ── Preserve critical files ──────────────────────────────────────────────────
+    Write-Step "Preserving critical files..."
+
+    $preserveTempDir = Join-Path $script:TempDir 'nightly-preserved'
+    if (Test-Path -LiteralPath $preserveTempDir) {
+        Remove-Item -LiteralPath $preserveTempDir -Recurse -Force
+    }
+    $preserveOk = Invoke-PreserveFiles -InstancePath $instancePath -Target $Target -TempDir $preserveTempDir
+    if (-not $preserveOk) {
+        Write-Warn "Some files could not be preserved. They may be lost during the update."
+        if (-not (Confirm-Action "Continue anyway?")) {
+            Write-Info "Update cancelled."
+            if ($customModTempDir -and (Test-Path -LiteralPath $customModTempDir)) {
+                try { Remove-Item -LiteralPath $customModTempDir -Recurse -Force } catch {}
+            }
+            if ($preserveTempDir -and (Test-Path -LiteralPath $preserveTempDir)) {
+                try { Remove-Item -LiteralPath $preserveTempDir -Recurse -Force } catch {}
+            }
+            return
+        }
+    }
+
     # ── Save rollback snapshot (mods/ and config/ before the JAR touches them) ──
     Write-Step "Saving rollback snapshot..."
 
@@ -155,7 +178,7 @@ function Invoke-NightlyUpdate {
     }
     New-Item -Path $nightlyRollbackDir -ItemType Directory -Force | Out-Null
 
-    $nightlyFoldersToSnapshot = @('mods', 'config')
+    $nightlyFoldersToSnapshot = @('mods', 'config', 'resources', 'scripts', 'shaderpacks')
     try {
         foreach ($folder in $nightlyFoldersToSnapshot) {
             $sourcePath = Join-Path $instancePath $folder
@@ -189,6 +212,9 @@ function Invoke-NightlyUpdate {
         }
         if ($nightlyRollbackDir -and (Test-Path -LiteralPath $nightlyRollbackDir)) {
             try { Remove-Item -LiteralPath $nightlyRollbackDir -Recurse -Force } catch {}
+        }
+        if ($preserveTempDir -and (Test-Path -LiteralPath $preserveTempDir)) {
+            try { Remove-Item -LiteralPath $preserveTempDir -Recurse -Force } catch {}
         }
         return
     }
@@ -252,6 +278,12 @@ function Invoke-NightlyUpdate {
 
     Write-Host ""
 
+    # ── Step 4b: Restore preserved files ────────────────────────────────────────
+    Write-Step "Restoring preserved files..."
+    if ($preserveTempDir -and (Test-Path -LiteralPath $preserveTempDir)) {
+        Invoke-RestoreFiles -InstancePath $instancePath -Target $Target -TempDir $preserveTempDir
+    }
+
     # ── Step 5: Restore custom mods ───────────────────────────────────────────
     Write-Step "Restoring custom mods..."
 
@@ -286,24 +318,32 @@ function Invoke-NightlyUpdate {
     # ── Step 8: Record history ────────────────────────────────────────────────
     Write-Step "Recording update..."
 
-    $versionLabel = "$Channel-$(Get-Date -Format 'yyyyMMdd')"
-    # Use the cached GitHub nightly tag if available (e.g., "2.9.0-nightly-2026-04-29")
-    if ($script:CachedLatestNightly) {
-        $versionLabel = $script:CachedLatestNightly
+    # Use cached nightly tag if available, otherwise fall back to date stamp
+    $versionLabel = if ($script:CachedLatestNightly) {
+        $script:CachedLatestNightly
+    } else {
+        "$Channel-$(Get-Date -Format 'yyyyMMdd')"
     }
+
     Add-UpdateHistoryEntry -Config $Config -Version $versionLabel -Channel $Channel -Target $Target
 
-    # Update installed version so the main menu reflects the nightly build
-    if ($Target -eq 'server') {
-        $Config.InstalledServerVersion = $versionLabel
-    } else {
-        $Config.InstalledClientVersion = $versionLabel
+    # Only overwrite installed version if we have a real nightly tag, or the current
+    # value is already a nightly stamp - avoids clobbering a real pack version with a date
+    $currentInstalled = $Target -eq 'server' ? $Config.InstalledServerVersion : $Config.InstalledClientVersion
+    $isAlreadyNightly = $currentInstalled -match 'nightly|daily|experimental|\d{8}'
+    if ($script:CachedLatestNightly -or $isAlreadyNightly -or [string]::IsNullOrEmpty($currentInstalled)) {
+        if ($Target -eq 'server') { $Config.InstalledServerVersion = $versionLabel }
+        else { $Config.InstalledClientVersion = $versionLabel }
+        Save-Config -Config $Config
     }
     Save-Config -Config $Config
 
     # Clean up
     if ($customModTempDir -and (Test-Path -LiteralPath $customModTempDir)) {
         try { Remove-Item -LiteralPath $customModTempDir -Recurse -Force } catch {}
+    }
+    if ($preserveTempDir -and (Test-Path -LiteralPath $preserveTempDir)) {
+        try { Remove-Item -LiteralPath $preserveTempDir -Recurse -Force } catch {}
     }
     if ($nightlyRollbackDir -and (Test-Path -LiteralPath $nightlyRollbackDir)) {
         try { Remove-Item -LiteralPath $nightlyRollbackDir -Recurse -Force } catch {}

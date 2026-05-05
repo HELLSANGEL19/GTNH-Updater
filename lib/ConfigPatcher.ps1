@@ -46,8 +46,8 @@ function Set-ConfigValue {
         [string]$Section = ''
     )
 
-    # Normalize path separators
-    $normalizedPath = $FilePath -replace '/', '\'
+    # Normalize path separators to platform convention
+    $normalizedPath = $FilePath -replace '[/\\]', [IO.Path]::DirectorySeparatorChar.ToString()
     $fullPath = Join-Path $InstancePath $normalizedPath
 
     if (-not (Test-Path -LiteralPath $fullPath)) {
@@ -141,7 +141,7 @@ function Invoke-ConfigPatches {
     $issues = @()
 
     foreach ($patch in $patchList) {
-        $normalizedPath = $patch.FilePath -replace '/', '\'
+        $normalizedPath = $patch.FilePath -replace '[/\\]', [IO.Path]::DirectorySeparatorChar.ToString()
         $fullPath = Join-Path $InstancePath $normalizedPath
         $desc = $patch.Description ? " ($($patch.Description))" : ''
 
@@ -274,7 +274,7 @@ function Test-ConfigPatches {
     Write-Header "Config Patch Test ($Target)"
 
     foreach ($patch in $patches) {
-        $normalizedPath = $patch.FilePath -replace '/', '\'
+        $normalizedPath = $patch.FilePath -replace '[/\\]', [IO.Path]::DirectorySeparatorChar.ToString()
         $fullPath = Join-Path $InstancePath $normalizedPath
 
         Write-Info "File: $($patch.FilePath)"
@@ -737,35 +737,77 @@ function Invoke-ConfigPatchMenu {
                         FilePath    = 'config/GregTech/Pollution.cfg'
                         Key         = 'B:"Activate Pollution"'
                         Value       = 'false'
-                        Description = 'Disable GregTech pollution'
+                        Description = 'Disable GregTech pollution mechanic entirely'
                     }
                     [PSCustomObject]@{
-                        Name        = 'Disable mob griefing'
-                        FilePath    = 'config/GregTech/general.cfg'
-                        Key         = 'B:mobGriefing'
+                        Name        = 'Disable all GT machine explosions'
+                        FilePath    = 'config/GregTech/GregTech.cfg'
+                        Key         = 'B:machineExplosions'
+                        Section     = 'machines'
                         Value       = 'false'
-                        Description = 'Prevent mobs from destroying blocks'
+                        Description = 'Prevent all GregTech machines from exploding under any condition'
                     }
                     [PSCustomObject]@{
-                        Name        = 'Disable GT explosions'
-                        FilePath    = 'config/GregTech/general.cfg'
-                        Key         = 'B:DoExplosions'
+                        Name        = 'Disable GT rain/thunder explosions'
+                        FilePath    = 'config/GregTech/GregTech.cfg'
+                        Key         = 'B:machineRainExplosions'
+                        Section     = 'machines'
                         Value       = 'false'
-                        Description = 'Disable GregTech machine explosions'
+                        Description = 'Machines will not explode when exposed to rain (also set machineThunderExplosions for thunder)'
                     }
                     [PSCustomObject]@{
-                        Name        = 'Disable IC2 rubber tree spawn'
-                        FilePath    = 'config/IC2.cfg'
-                        Key         = 'B:rubberTreeSpawn'
+                        Name        = 'Disable GT wrench explosions'
+                        FilePath    = 'config/GregTech/GregTech.cfg'
+                        Key         = 'B:machineNonWrenchExplosions'
+                        Section     = 'machines'
                         Value       = 'false'
-                        Description = 'Stop IC2 rubber trees from spawning (GT rubber is used instead)'
+                        Description = 'Machines will not explode when broken without a wrench'
                     }
                     [PSCustomObject]@{
-                        Name        = 'Disable Thaumcraft nodes drain'
-                        FilePath    = 'config/Thaumcraft.cfg'
-                        Key         = 'B:NODE_DRAIN'
+                        Name        = 'Disable harder mob spawners'
+                        FilePath    = 'config/GregTech/GregTech.cfg'
+                        Key         = 'B:harderMobSpawner'
+                        Section     = 'general'
                         Value       = 'false'
-                        Description = 'Prevent aura nodes from draining each other'
+                        Description = 'Mob spawners return to vanilla hardness and blast resistance'
+                    }
+                    [PSCustomObject]@{
+                        Name        = 'Disable AE2 channels'
+                        FilePath    = 'config/AppliedEnergistics2/AppliedEnergistics2.cfg'
+                        Key         = 'B:Channels'
+                        Section     = 'networkfeatures'
+                        Value       = 'false'
+                        Description = 'Remove AE2 channel limits (singleplayer or apply server-side for multiplayer)'
+                    }
+                    [PSCustomObject]@{
+                        Name        = 'Disable all special creepers'
+                        FilePath    = 'config/SpecialMobs.cfg'
+                        Key         = 'B:_special_creepers'
+                        Section     = 'creeper_rates'
+                        Value       = 'false'
+                        Description = 'Prevent special creeper variants (gravel, doom, splitting, etc.) from spawning'
+                    }
+                    [PSCustomObject]@{
+                        Name        = 'Morpheus sleep percentage'
+                        FilePath    = 'config/Morpheus.cfg'
+                        Key         = 'I:SleeperPerc'
+                        Section     = 'settings'
+                        Value       = '50'
+                        Description = 'Percentage of online players that must sleep to skip night (server only, default 50)'
+                    }
+                    [PSCustomObject]@{
+                        Name        = 'Disable warp environmental effects'
+                        FilePath    = 'config/WarpTheory.cfg'
+                        Key         = 'B:allowGlobalWarpEffects'
+                        Value       = 'false'
+                        Description = 'Disables warp-triggered environment effects like livestock rain'
+                    }
+                    [PSCustomObject]@{
+                        Name        = 'Enable borderless fullscreen (Java 17+ only)'
+                        FilePath    = 'config/lwjgl3ify.cfg'
+                        Key         = 'B:borderless'
+                        Value       = 'true'
+                        Description = 'Replaces exclusive fullscreen with borderless windowed (requires Java 17+ pack, not Java 8)'
                     }
                 )
 

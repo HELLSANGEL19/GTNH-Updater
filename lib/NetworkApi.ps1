@@ -46,7 +46,7 @@ function Invoke-GitHubApi {
 
     try {
         $headers = @{ 'User-Agent' = 'GTNH-Updater-Script' }
-        $response = Invoke-RestMethod -Uri $Uri -Method $Method -Headers $headers -ErrorAction Stop
+        $response = Invoke-RestMethod -Uri $Uri -Method $Method -Headers $headers -TimeoutSec 30 -ErrorAction Stop
         return $response
     }
     catch {
@@ -124,7 +124,7 @@ function Get-LatestStableRelease {
 
     try {
         Write-Log "[STABLE] Fetching official downloads page: $downloadsPageUrl"
-        $response = Invoke-WebRequest -Uri $downloadsPageUrl -UseBasicParsing -ErrorAction Stop
+        $response = Invoke-WebRequest -Uri $downloadsPageUrl -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop
         $content = $response.Content
 
         # Parse for version pattern: Latest (X.Y.Z)
@@ -232,7 +232,7 @@ function Get-LatestStableReleaseFallback {
 
     try {
         Write-Log "[STABLE-FALLBACK] Trying direct file listing: $serverPacksUrl"
-        $response = Invoke-WebRequest -Uri $serverPacksUrl -UseBasicParsing -ErrorAction Stop
+        $response = Invoke-WebRequest -Uri $serverPacksUrl -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop
         $content = $response.Content
 
         # Look for server zips matching the requested Java version
@@ -337,6 +337,7 @@ function Invoke-FileDownload {
         # Use HttpClient for streaming download with progress
         $httpClient = [System.Net.Http.HttpClient]::new()
         $httpClient.DefaultRequestHeaders.Add('User-Agent', 'GTNH-Updater-Script')
+        $httpClient.Timeout = [TimeSpan]::FromMinutes(10)
 
         $response = $httpClient.GetAsync($Url, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).Result
         $response.EnsureSuccessStatusCode()
@@ -350,6 +351,7 @@ function Invoke-FileDownload {
         $lastPercent = -1
         $speedTimer = [System.Diagnostics.Stopwatch]::StartNew()
         $speedBytes = 0
+        $speedLabel = ''
 
         while (($bytesRead = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
             $fileStream.Write($buffer, 0, $bytesRead)
@@ -364,7 +366,6 @@ function Invoke-FileDownload {
                     $bar = ('█' * [math]::Floor($percent / 2)).PadRight(50, '░')
 
                     # Calculate speed (update every 500ms to avoid flicker)
-                    $speedLabel = ''
                     if ($speedTimer.ElapsedMilliseconds -gt 500) {
                         $speedMBs = [math]::Round(($speedBytes / 1MB) / ($speedTimer.ElapsedMilliseconds / 1000), 1)
                         $speedLabel = "  ${speedMBs} MB/s"
@@ -372,7 +373,10 @@ function Invoke-FileDownload {
                         $speedTimer.Restart()
                     }
 
-                    Write-Host "`r  [$bar] ${percent}%  ${downloadedMB}/${totalMB} MB${speedLabel}    " -NoNewline -ForegroundColor Gray
+                    $progressLine = "  [$bar] ${percent}%  ${downloadedMB}/${totalMB} MB${speedLabel}"
+                    # Pad to fixed width to fully overwrite previous line content
+                    $progressLine = $progressLine.PadRight(78)
+                    Write-Host "`r${progressLine}" -NoNewline -ForegroundColor Gray
                     $lastPercent = $percent
                 }
             }
@@ -425,6 +429,13 @@ function Invoke-FileDownload {
             Write-Err "Download failed: $($ex.Message)"
             Write-Log "[ERROR] Download failure for $Url - $($ex.Message)"
         }
+
+        # Clean up partial download to avoid corrupted files
+        if ($fileStream) { try { $fileStream.Dispose(); $fileStream = $null } catch {} }
+        if (Test-Path -LiteralPath $OutPath) {
+            try { Remove-Item -LiteralPath $OutPath -Force } catch {}
+        }
+
         return $false
     }
     finally {
@@ -509,7 +520,7 @@ function Get-OfficialModList {
 
     try {
         Write-Log "[MODLIST] Fetching official mod list for $Version from GitHub..."
-        $response = Invoke-WebRequest -Uri $readmeUrl -UseBasicParsing -ErrorAction Stop
+        $response = Invoke-WebRequest -Uri $readmeUrl -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop
         $content = $response.Content
 
         # Parse the markdown table: | [Name](url) | Version |
@@ -592,7 +603,7 @@ function Get-WebsiteReleases {
 
     try {
         Write-Log "[RELEASES] Fetching version history page: $versionHistoryUrl"
-        $response = Invoke-WebRequest -Uri $versionHistoryUrl -UseBasicParsing -ErrorAction Stop
+        $response = Invoke-WebRequest -Uri $versionHistoryUrl -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop
         $content = $response.Content
 
         # Match version entries in the HTML. The version and type label are in

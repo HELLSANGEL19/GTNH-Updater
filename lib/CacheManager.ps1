@@ -204,7 +204,7 @@ function Invoke-CacheMenu {
 
         Write-Host ""
         Write-MenuOption -Key 'C' -Description 'Clear all cached files'
-        Write-MenuOption -Key 'O' -Description 'Open cache folder in Explorer'
+        Write-MenuOption -Key 'O' -Description 'Open cache folder'
         Write-MenuOption -Key 'R' -Description 'Return to previous menu'
 
         $choice = Read-MenuChoice -Prompt 'Choose an option'
@@ -235,7 +235,7 @@ function Invoke-CacheMenu {
                 if (-not (Test-Path -LiteralPath $cacheDir)) {
                     New-Item -Path $cacheDir -ItemType Directory -Force | Out-Null
                 }
-                Start-Process explorer.exe -ArgumentList "`"$cacheDir`""
+                Open-FolderInFileManager -Path $cacheDir
             }
             'R' {
                 return

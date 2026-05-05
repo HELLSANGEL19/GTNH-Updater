@@ -14,6 +14,7 @@
 #   Read-UserInput      - Prompt with optional default value
 #   Confirm-Action      - (y/n) confirmation prompt
 #   Wait-ForKey         - Press any key to continue
+#   Open-FolderInFileManager - Open folder in system file manager (cross-platform)
 #
 # All Write-* functions that log also guard against Write-Log not being loaded
 # yet (DisplayHelpers.ps1 is dot-sourced before Logging.ps1).
@@ -247,4 +248,43 @@ function Wait-ForKey {
     Write-Host ""
     Write-Host "  Press any key to continue..." -ForegroundColor DarkGray
     $null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
+}
+
+function Open-FolderInFileManager {
+    <#
+    .SYNOPSIS
+        Open a folder in the system file manager (cross-platform).
+    .DESCRIPTION
+        On Windows: uses explorer.exe.
+        On Linux: uses xdg-open.
+    .PARAMETER Path
+        The folder path to open.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Path
+    )
+
+    if ($IsWindows) {
+        Start-Process explorer.exe -ArgumentList "`"$Path`""
+    }
+    else {
+        # Linux: use xdg-open (available on most desktop environments)
+        try {
+            Start-Process 'xdg-open' -ArgumentList "`"$Path`""
+        }
+        catch {
+            # Fallback: try common alternatives
+            $opened = $false
+            foreach ($opener in @('nautilus', 'dolphin', 'thunar', 'nemo', 'pcmanfm')) {
+                if (Get-Command $opener -ErrorAction SilentlyContinue) {
+                    Start-Process $opener -ArgumentList "`"$Path`""
+                    $opened = $true
+                    break
+                }
+            }
+            if (-not $opened) {
+                throw "No file manager found. Install xdg-utils or open manually: $Path"
+            }
+        }
+    }
 }

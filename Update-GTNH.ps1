@@ -46,7 +46,7 @@ if ($PSVersionTable.PSVersion.Major -lt 7) {
 # GLOBAL VARIABLES
 # ============================================================================
 
-$script:UpdaterVersion = '0.1.2.7-beta'
+$script:UpdaterVersion = '0.1.3.0-beta'
 
 $script:ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $script:ConfigPath = Join-Path $script:ScriptDir 'gtnh-updater-config.json'
@@ -72,6 +72,7 @@ $script:ClientJava17InstanceRootItems = @('libraries', 'patches', 'mmc-pack.json
 
 # Log file reference (set during Initialize-Logging)
 $script:LogFile = $null
+$script:CachedWebsiteReleases = $null
 
 # ============================================================================
 # DOT-SOURCE LIB FILES (dependency order)
@@ -103,22 +104,33 @@ $script:LockFile = Join-Path $script:ScriptDir '.updater.lock'
 $script:WeCreatedLock = $false
 
 try {
-    # Check for existing lock file (another instance running)
+    # Check for existing lock file (another instance running or previous crash)
     if (Test-Path -LiteralPath $script:LockFile) {
         $lockContent = Get-Content -LiteralPath $script:LockFile -Raw -ErrorAction SilentlyContinue
-        Write-Host ""
-        Write-Host "  [!] Another instance of GTNH Updater may be running." -ForegroundColor DarkYellow
-        Write-Host "  Lock file: $($script:LockFile)" -ForegroundColor Gray
-        if ($lockContent) {
-            Write-Host "  Started: $($lockContent.Trim())" -ForegroundColor Gray
-        }
-        Write-Host ""
-        Write-Host "  If the previous run crashed, you can safely continue." -ForegroundColor Gray
-        Write-Host "  Continue? (y/n): " -NoNewline -ForegroundColor White
-        $lockResponse = (Read-Host).Trim()
-        if ($lockResponse -ne 'y' -and $lockResponse -ne 'Y') {
-            Write-Host "  Exiting." -ForegroundColor Gray
-            exit 0
+        $lockAge = $null
+        try {
+            $lockTime = [datetime]::ParseExact($lockContent.Trim(), 'yyyy-MM-dd HH:mm:ss', $null)
+            $lockAge = (Get-Date) - $lockTime
+        } catch {}
+
+        # If the lock is older than 12 hours, it's definitely stale - auto-clean
+        if ($lockAge -and $lockAge.TotalHours -gt 12) {
+            try { Remove-Item -LiteralPath $script:LockFile -Force } catch {}
+        } else {
+            Write-Host ""
+            Write-Host "  [!] Another instance of GTNH Updater may be running." -ForegroundColor DarkYellow
+            Write-Host "  Lock file: $($script:LockFile)" -ForegroundColor Gray
+            if ($lockContent) {
+                Write-Host "  Started: $($lockContent.Trim())" -ForegroundColor Gray
+            }
+            Write-Host ""
+            Write-Host "  If the previous run crashed, you can safely continue." -ForegroundColor Gray
+            Write-Host "  Continue? (y/n): " -NoNewline -ForegroundColor White
+            $lockResponse = (Read-Host).Trim()
+            if ($lockResponse -ne 'y' -and $lockResponse -ne 'Y') {
+                Write-Host "  Exiting." -ForegroundColor Gray
+                exit 0
+            }
         }
     }
 
@@ -140,7 +152,7 @@ catch {
     exit 1
 }
 finally {
-    # Only remove lock file if we created it (don't delete another instance's lock)
+    # Remove lock file if we created it
     if ($script:WeCreatedLock -and $script:LockFile -and (Test-Path -LiteralPath $script:LockFile)) {
         try { Remove-Item -LiteralPath $script:LockFile -Force } catch {}
     }

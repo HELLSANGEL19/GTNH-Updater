@@ -5,13 +5,16 @@
 #   Test-GtnhPath            - Validate a path looks like a GTNH instance
 #   Invoke-InteractiveSetup  - Multi-step wizard:
 #                               1. Detect Java installations
-#                               2. Detect server instances
-#                               3. Detect client instances
-#                               4. Set preferences (channel, pack type)
-#                               5. Summary and save
+#                               2. Ask what user manages (server/client/both)
+#                               3. Detect server instances (if applicable)
+#                               4. Detect client instances (if applicable)
+#                               5. Set preferences (channel, pack type)
+#                               6. Config patches
+#                               7. Summary and save
 #
 # Presents detected options as numbered lists; manual entry is always the
 # last option. Shows defaults in brackets, validates paths immediately.
+# Steps 3/4 are skipped based on the user's answer in step 2.
 # ============================================================================
 
 function Test-GtnhPath {
@@ -94,7 +97,7 @@ function Invoke-InteractiveSetup {
     # ========================================================================
     # Step 1: Java Detection
     # ========================================================================
-    Write-Header "Step 1/5: Java Installation"
+    Write-Header "Step 1/7: Java Installation"
 
     $javaInstalls = Find-JavaInstallations
 
@@ -116,6 +119,7 @@ function Invoke-InteractiveSetup {
         }
         Write-MenuOption "M" "Enter path manually"
 
+        $javaBinaryName = if ($IsWindows) { 'java.exe' } else { 'java' }
         $defaultHint = $recommendedIdx -ge 0 ? " [default: $($recommendedIdx + 1)]" : ""
         $javaChoice = Read-MenuChoice "Select Java installation$defaultHint"
 
@@ -124,10 +128,11 @@ function Invoke-InteractiveSetup {
             $config.JavaPath = $javaInstalls[$recommendedIdx].Path
         }
         elseif ($javaChoice -eq 'M' -or $javaChoice -eq 'm') {
-            $javaPath = Read-UserInput "Enter the full path to java.exe (not javaw.exe)"
+            $javaPrompt = if ($IsWindows) { "Enter the full path to java.exe (not javaw.exe)" } else { "Enter the full path to the java binary" }
+            $javaPath = Read-UserInput $javaPrompt
             while ($javaPath -and -not (Test-Path -LiteralPath $javaPath)) {
                 Write-Warn "Path not found: $javaPath"
-                $javaPath = Read-UserInput "Enter the full path to java.exe (not javaw.exe)"
+                $javaPath = Read-UserInput $javaPrompt
             }
             if ($javaPath) {
                 $config.JavaPath = $javaPath
@@ -145,11 +150,13 @@ function Invoke-InteractiveSetup {
     }
     else {
         Write-Info "No Java installations detected."
-        $javaPath = Read-UserInput "Enter the full path to java.exe (not javaw.exe), or press Enter to skip"
+        $javaPrompt = if ($IsWindows) { "Enter the full path to java.exe (not javaw.exe), or press Enter to skip" } else { "Enter the full path to the java binary, or press Enter to skip" }
+        $javaPath = Read-UserInput $javaPrompt
         if ($javaPath) {
             while ($javaPath -and -not (Test-Path -LiteralPath $javaPath)) {
                 Write-Warn "Path not found: $javaPath"
-                $javaPath = Read-UserInput "Enter the full path to java.exe, or press Enter to skip"
+                $javaPrompt2 = if ($IsWindows) { "Enter the full path to java.exe, or press Enter to skip" } else { "Enter the full path to the java binary, or press Enter to skip" }
+                $javaPath = Read-UserInput $javaPrompt2
             }
             if ($javaPath) {
                 $config.JavaPath = $javaPath
@@ -162,11 +169,32 @@ function Invoke-InteractiveSetup {
     }
 
     # ========================================================================
-    # Step 2: Server Instance Detection
+    # Step 2: What are you managing?
     # ========================================================================
-    Write-Header "Step 2/5: GTNH Server Instance"
+    Write-Header "Step 2/7: What do you manage?"
 
-    $serverInstances = Find-AmpInstances
+    Write-Info "What will you use this updater for?"
+    Write-MenuOption "1" "Server only (dedicated server, no client on this machine)"
+    Write-MenuOption "2" "Client only (Prism Launcher, MultiMC, etc.)"
+    Write-MenuOption "3" "Both server and client"
+
+    $manageChoice = Read-MenuChoice "Select option"
+    $wantServer = $manageChoice -eq '1' -or $manageChoice -eq '3'
+    $wantClient = $manageChoice -eq '2' -or $manageChoice -eq '3'
+
+    # Default to both if invalid input
+    if (-not $wantServer -and -not $wantClient) {
+        $wantServer = $true
+        $wantClient = $true
+    }
+
+    # ========================================================================
+    # Step 3: Server Instance Detection (skipped if not managing a server)
+    # ========================================================================
+    if ($wantServer) {
+    Write-Header "Step 3/7: GTNH Server Instance"
+
+    $serverInstances = Find-ServerInstances
 
     if ($serverInstances.Count -gt 0) {
         Write-Info "Detected GTNH server instances:"
@@ -229,11 +257,13 @@ function Invoke-InteractiveSetup {
     if ($config.ServerPath) {
         Write-Success "Server path set: $($config.ServerPath)"
     }
+    } # end if ($wantServer)
 
     # ========================================================================
-    # Step 3: Client Instance Detection
+    # Step 4: Client Instance Detection (skipped if not managing a client)
     # ========================================================================
-    Write-Header "Step 3/5: GTNH Client Instance (Prism Launcher)"
+    if ($wantClient) {
+    Write-Header "Step 4/7: GTNH Client Instance (Prism Launcher)"
 
     $clientInstances = Find-PrismInstances
 
@@ -298,11 +328,12 @@ function Invoke-InteractiveSetup {
     if ($config.ClientInstancePath) {
         Write-Success "Client path set: $($config.ClientInstancePath)"
     }
+    } # end if ($wantClient)
 
     # ========================================================================
-    # Step 4: Preferences
+    # Step 5: Preferences
     # ========================================================================
-    Write-Header "Step 4/5: Preferences"
+    Write-Header "Step 5/7: Preferences"
 
     # Default channel
     Write-Info "Select default update channel:"
@@ -364,16 +395,24 @@ function Invoke-InteractiveSetup {
         Write-Info "Press Enter to accept, or type a version to override."
 
         if ($hasServer) {
-            $serverVersion = Read-UserInput "Server version" -Default ($serverDetected ?? '')
-            if ($serverVersion) {
-                $config.InstalledServerVersion = $serverVersion
-            }
+            $serverVersion = $null
+            do {
+                $input = Read-UserInput "Server version" -Default ($serverDetected ?? '')
+                if (-not $input -or $input -eq ($serverDetected ?? '')) { $serverVersion = $serverDetected; break }
+                if ($input -match '^\d+\.\d+\.\d+') { $serverVersion = $input }
+                else { Write-Warn "Please enter a full version like 2.8.4, not just a number." }
+            } while (-not $serverVersion)
+            if ($serverVersion) { $config.InstalledServerVersion = $serverVersion }
         }
         if ($hasClient) {
-            $clientVersion = Read-UserInput "Client version" -Default ($clientDetected ?? '')
-            if ($clientVersion) {
-                $config.InstalledClientVersion = $clientVersion
-            }
+            $clientVersion = $null
+            do {
+                $input = Read-UserInput "Client version" -Default ($clientDetected ?? '')
+                if (-not $input -or $input -eq ($clientDetected ?? '')) { $clientVersion = $clientDetected; break }
+                if ($input -match '^\d+\.\d+\.\d+') { $clientVersion = $input }
+                else { Write-Warn "Please enter a full version like 2.8.4, not just a number." }
+            } while (-not $clientVersion)
+            if ($clientVersion) { $config.InstalledClientVersion = $clientVersion }
         }
 
         if ($config.InstalledServerVersion -or $config.InstalledClientVersion) {
@@ -389,14 +428,16 @@ function Invoke-InteractiveSetup {
         Write-Host "2.8.4" -NoNewline -ForegroundColor Cyan
         Write-Host " or " -NoNewline -ForegroundColor Gray
         Write-Host "2.8.0-beta-4" -ForegroundColor Cyan
-        $currentVersion = Read-UserInput "Current GTNH version"
+        $currentVersion = $null
+        do {
+            $input = Read-UserInput "Current GTNH version"
+            if (-not $input) { break }
+            if ($input -match '^\d+\.\d+\.\d+') { $currentVersion = $input }
+            else { Write-Warn "Please enter a full version like 2.8.4, not just a number." }
+        } while (-not $currentVersion)
         if ($currentVersion) {
-            if ($hasServer) {
-                $config.InstalledServerVersion = $currentVersion
-            }
-            if ($hasClient) {
-                $config.InstalledClientVersion = $currentVersion
-            }
+            if ($hasServer) { $config.InstalledServerVersion = $currentVersion }
+            if ($hasClient) { $config.InstalledClientVersion = $currentVersion }
             Write-Success "Version set to: $currentVersion"
         }
     }
@@ -404,87 +445,208 @@ function Invoke-InteractiveSetup {
     # Optional: Custom mods prompt
     if ($hasServer -or $hasClient) {
         Write-Host ""
-        Write-Info "If you have custom mods (not part of GTNH), you can add them now."
-        Write-Info "They'll be preserved during updates. You can also do this later in Settings."
-        if (Confirm-Action "Add custom mods now?") {
+        Write-Info "If you have custom mods (not part of GTNH), they need to be tracked"
+        Write-Info "so they're preserved during updates."
+        Write-Host ""
+        Write-MenuOption "S" "Scan (downloads pack zip, auto-detects your custom mods)"
+        Write-MenuOption "B" "Browse mods/ folder and pick manually"
+        Write-MenuOption "K" "Skip (do this later in Settings > Custom Mods)"
+
+        $customChoice = Read-MenuChoice "Choose"
+
+        if ($customChoice -eq 's' -or $customChoice -eq 'S') {
+            # Use the scan approach - download pack zip and compare
+            $scanTargets = @()
+            if ($hasServer) { $scanTargets += 'server' }
+            if ($hasClient) { $scanTargets += 'client' }
+
+            foreach ($scanTarget in $scanTargets) {
+                $scanLabel = $scanTarget -eq 'server' ? 'Server' : 'Client'
+                $scanVer = $scanTarget -eq 'server' ? $config.InstalledServerVersion : $config.InstalledClientVersion
+                $scanPath = $scanTarget -eq 'server' ? $config.ServerPath : $config.ClientInstancePath
+
+                if ([string]::IsNullOrWhiteSpace($scanVer) -or $scanVer -eq 'unknown') {
+                    Write-Warn "No version set for $scanLabel - skipping scan."
+                    continue
+                }
+                if ([string]::IsNullOrEmpty($scanPath) -or -not (Test-Path -LiteralPath $scanPath)) {
+                    continue
+                }
+                $scanModsDir = Join-Path $scanPath 'mods'
+                if (-not (Test-Path -LiteralPath $scanModsDir)) { continue }
+
+                # Find the release
+                $scanReleases = $script:CachedWebsiteReleases ?? (Get-WebsiteReleases -PackType ($config.JavaVersion ?? 'java17'))
+                $scanRelease = $null
+                if ($scanReleases) {
+                    $scanRelease = $scanReleases | Where-Object { $_.Version -eq $scanVer } | Select-Object -First 1
+                }
+                if (-not $scanRelease) {
+                    Write-Warn "Could not find v${scanVer} in releases - skipping $scanLabel scan."
+                    continue
+                }
+
+                $scanZipUrl = if ($scanTarget -eq 'server') { $scanRelease.ServerZipUrl } else { $scanRelease.ClientZipUrl }
+                $scanZipName = if ($scanTarget -eq 'server') { $scanRelease.ServerZipName } else { $scanRelease.ClientZipName }
+                if (-not $scanZipUrl) { continue }
+
+                # Check cache or download
+                $scanCached = Get-CachedFile -FileName $scanZipName
+                if ($scanCached) {
+                    Write-Info "Using cached $scanLabel pack: $scanZipName"
+                } else {
+                    Write-Info "Downloading v${scanVer} $($scanLabel.ToLower()) pack for comparison..."
+                }
+
+                $scanTempDir = $script:TempDir
+                if (-not (Test-Path -LiteralPath $scanTempDir)) {
+                    New-Item -Path $scanTempDir -ItemType Directory -Force | Out-Null
+                }
+                $scanZipPath = Join-Path $scanTempDir $scanZipName
+
+                if ($scanCached) {
+                    try { Copy-Item -LiteralPath $scanCached -Destination $scanZipPath -Force } catch { continue }
+                } else {
+                    $dlResult = Invoke-FileDownload -Url $scanZipUrl -OutPath $scanZipPath -Description "v${scanVer} $scanLabel pack"
+                    if (-not $dlResult) {
+                        Write-Warn "Download failed - skipping $scanLabel scan."
+                        continue
+                    }
+                }
+
+                # Read mod filenames from zip
+                try {
+                    Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+                    $scanZip = [System.IO.Compression.ZipFile]::OpenRead($scanZipPath)
+                    $officialModFiles = @()
+                    foreach ($entry in $scanZip.Entries) {
+                        if ($entry.FullName -match '(?:^|/)mods/([^/]+\.jar)$') {
+                            $officialModFiles += $Matches[1]
+                        }
+                    }
+                    $scanZip.Dispose()
+                }
+                catch {
+                    Write-Warn "Could not read zip - skipping $scanLabel scan."
+                    continue
+                }
+                finally {
+                    if (Test-Path -LiteralPath $scanZipPath) {
+                        try { Remove-Item -LiteralPath $scanZipPath -Force } catch {}
+                    }
+                }
+
+                if ($officialModFiles.Count -eq 0) { continue }
+
+                # Compare
+                $officialBaseNames = @{}
+                foreach ($modFile in $officialModFiles) {
+                    $officialBaseNames[(Get-ModBaseName -FileName $modFile)] = $true
+                }
+
+                $localJars = @(Get-ChildItem -LiteralPath $scanModsDir -Filter '*.jar' -File | ForEach-Object { $_.Name })
+                $customFound = @()
+                foreach ($jar in $localJars) {
+                    if (-not $officialBaseNames.ContainsKey((Get-ModBaseName -FileName $jar))) {
+                        $customFound += $jar
+                    }
+                }
+
+                if ($customFound.Count -gt 0) {
+                    Write-Host ""
+                    Write-Info "Found $($customFound.Count) custom $($scanLabel.ToLower()) mod(s):"
+                    foreach ($mod in ($customFound | Sort-Object)) {
+                        Write-Host "    * $mod" -ForegroundColor Cyan
+                    }
+                    Write-Host ""
+                    if (Confirm-Action "Track all $($customFound.Count) as custom $($scanLabel.ToLower()) mods?") {
+                        if ($scanTarget -eq 'server') {
+                            $config.CustomServerMods = $customFound
+                        } else {
+                            $config.CustomClientMods = $customFound
+                        }
+                        Write-Success "Added $($customFound.Count) custom $($scanLabel.ToLower()) mod(s)."
+                    }
+                } else {
+                    Write-Success "No custom $($scanLabel.ToLower()) mods detected - all mods match the official pack."
+                }
+            }
+        }
+        elseif ($customChoice -eq 'b' -or $customChoice -eq 'B') {
+            # Reusable paginated mod picker scriptblock
+            $pickCustomMods = {
+                param([string]$ModsDir, [string]$Label)
+                $allJars = @(Get-ChildItem -LiteralPath $ModsDir -Filter '*.jar' -File | Sort-Object Name | ForEach-Object { $_.Name })
+                if ($allJars.Count -eq 0) { return @() }
+                $pageSize = 30
+                $page = 0
+                $selected = @()
+                while ($true) {
+                    $totalPages = [math]::Ceiling($allJars.Count / $pageSize)
+                    $start = $page * $pageSize
+                    $end = [math]::Min($start + $pageSize, $allJars.Count) - 1
+                    $tagWidth = "[$($allJars.Count)]".Length
+                    Write-Info "Browse $Label mods (page $($page+1)/$totalPages, $($allJars.Count) total):"
+                    Write-Info "Type numbers to add (comma-separated), N/P for pages, Enter to skip:"
+                    for ($i = $start; $i -le $end; $i++) {
+                        $tag = "[$($i + 1)]".PadLeft($tagWidth)
+                        Write-Host "    $tag $($allJars[$i])" -ForegroundColor Cyan
+                    }
+                    Write-Host ""
+                    $picks = (Read-UserInput "Selection (or N/P to page)").Trim()
+                    if (-not $picks) { break }
+                    if ($picks -eq 'n' -or $picks -eq 'N') { if ($page -lt $totalPages - 1) { $page++ }; continue }
+                    if ($picks -eq 'p' -or $picks -eq 'P') { if ($page -gt 0) { $page-- }; continue }
+                    foreach ($part in ($picks -split ',')) {
+                        $idx = 0
+                        if ([int]::TryParse($part.Trim(), [ref]$idx) -and $idx -ge 1 -and $idx -le $allJars.Count) {
+                            $selected += $allJars[$idx - 1]
+                        }
+                    }
+                    break
+                }
+                return $selected
+            }
+
             if ($hasServer) {
                 $serverModsDir = Join-Path $config.ServerPath 'mods'
                 if (Test-Path -LiteralPath $serverModsDir) {
-                    Write-Info "Browse server mods to mark as custom:"
-                    # Inline browse - show all jars, let user pick
-                    $allJars = @(Get-ChildItem -LiteralPath $serverModsDir -Filter '*.jar' -File | Sort-Object Name | ForEach-Object { $_.Name })
-                    if ($allJars.Count -gt 0) {
-                        Write-Info "Type numbers to add (comma-separated), or Enter to skip:"
-                        $tagWidth = "[$($allJars.Count)]".Length
-                        $displayCount = [math]::Min($allJars.Count, 30)
-                        for ($i = 0; $i -lt $displayCount; $i++) {
-                            $tag = "[$($i + 1)]".PadLeft($tagWidth)
-                            Write-Host "    $tag $($allJars[$i])" -ForegroundColor Cyan
-                        }
-                        if ($allJars.Count -gt 30) {
-                            Write-Info "    ... ($($allJars.Count) total, showing first 30. Add more in Settings.)"
-                        }
-                        Write-Host ""
-                        Write-Host "  Select: " -NoNewline -ForegroundColor White
-                        $picks = (Read-Host).Trim()
-                        if ($picks) {
-                            $selected = @()
-                            foreach ($part in ($picks -split ',')) {
-                                $idx = 0
-                                if ([int]::TryParse($part.Trim(), [ref]$idx) -and $idx -ge 1 -and $idx -le $allJars.Count) {
-                                    $selected += $allJars[$idx - 1]
-                                }
-                            }
-                            if ($selected.Count -gt 0) {
-                                $config.CustomServerMods = $selected
-                                Write-Success "Added $($selected.Count) server custom mod(s)."
-                            }
-                        }
+                    $selected = & $pickCustomMods $serverModsDir 'server'
+                    if ($selected.Count -gt 0) {
+                        $config.CustomServerMods = $selected
+                        Write-Success "Added $($selected.Count) server custom mod(s)."
                     }
                 }
             }
             if ($hasClient) {
                 $clientModsDir = Join-Path $config.ClientInstancePath 'mods'
                 if (Test-Path -LiteralPath $clientModsDir) {
-                    Write-Info "Browse client mods to mark as custom:"
-                    $allJars = @(Get-ChildItem -LiteralPath $clientModsDir -Filter '*.jar' -File | Sort-Object Name | ForEach-Object { $_.Name })
-                    if ($allJars.Count -gt 0) {
-                        Write-Info "Type numbers to add (comma-separated), or Enter to skip:"
-                        $tagWidth = "[$($allJars.Count)]".Length
-                        $displayCount = [math]::Min($allJars.Count, 30)
-                        for ($i = 0; $i -lt $displayCount; $i++) {
-                            $tag = "[$($i + 1)]".PadLeft($tagWidth)
-                            Write-Host "    $tag $($allJars[$i])" -ForegroundColor Cyan
-                        }
-                        if ($allJars.Count -gt 30) {
-                            Write-Info "    ... ($($allJars.Count) total, showing first 30. Add more in Settings.)"
-                        }
-                        Write-Host ""
-                        Write-Host "  Select: " -NoNewline -ForegroundColor White
-                        $picks = (Read-Host).Trim()
-                        if ($picks) {
-                            $selected = @()
-                            foreach ($part in ($picks -split ',')) {
-                                $idx = 0
-                                if ([int]::TryParse($part.Trim(), [ref]$idx) -and $idx -ge 1 -and $idx -le $allJars.Count) {
-                                    $selected += $allJars[$idx - 1]
-                                }
-                            }
-                            if ($selected.Count -gt 0) {
-                                $config.CustomClientMods = $selected
-                                Write-Success "Added $($selected.Count) client custom mod(s)."
-                            }
-                        }
+                    $selected = & $pickCustomMods $clientModsDir 'client'
+                    if ($selected.Count -gt 0) {
+                        $config.CustomClientMods = $selected
+                        Write-Success "Added $($selected.Count) client custom mod(s)."
                     }
                 }
             }
         }
+        # 'K' or anything else = skip
     }
 
     # ========================================================================
-    # Step 5: Summary and Save
+    # Step 6: Config Patches
     # ========================================================================
-    Write-Header "Step 5/5: Configuration Summary"
+    Write-Header "Step 6/7: Config Patches"
+    Write-Info "Config patches let you toggle common settings (explosions, channels, etc.)"
+    Write-Info "You can skip this and manage patches later via Settings > Config Patches."
+    Write-Host ""
+    if (Confirm-Action "Set up config patches now?") {
+        Invoke-ConfigPatchMenu -Config $config
+    }
+
+    # ========================================================================
+    # Step 7: Summary and Save
+    # ========================================================================
+    Write-Header "Step 7/7: Configuration Summary"
 
     Show-CurrentConfig -Config $config
 

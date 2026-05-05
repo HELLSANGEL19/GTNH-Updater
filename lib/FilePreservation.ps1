@@ -79,8 +79,8 @@ function Invoke-PreserveFiles {
     $failedItems = @()
 
     foreach ($item in $preserveList) {
-        $sourcePath = Join-Path $InstancePath ($item -replace '/', '\')
-        $destPath = Join-Path $TempDir ($item -replace '/', '\')
+        $sourcePath = Join-Path $InstancePath ($item -replace '[/\\]', [IO.Path]::DirectorySeparatorChar.ToString())
+        $destPath = Join-Path $TempDir ($item -replace '[/\\]', [IO.Path]::DirectorySeparatorChar.ToString())
 
         if (Test-Path -LiteralPath $sourcePath) {
             try {
@@ -136,8 +136,8 @@ function Invoke-RestoreFiles {
     $preserveList = $Target -eq 'server' ? (Get-ServerPreservationList) : (Get-ClientPreservationList)
 
     foreach ($item in $preserveList) {
-        $sourcePath = Join-Path $TempDir ($item -replace '/', '\')
-        $destPath = Join-Path $InstancePath ($item -replace '/', '\')
+        $sourcePath = Join-Path $TempDir ($item -replace '[/\\]', [IO.Path]::DirectorySeparatorChar.ToString())
+        $destPath = Join-Path $InstancePath ($item -replace '[/\\]', [IO.Path]::DirectorySeparatorChar.ToString())
 
         if (Test-Path -LiteralPath $sourcePath) {
             try {

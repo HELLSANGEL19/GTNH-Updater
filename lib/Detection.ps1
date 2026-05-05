@@ -2,28 +2,31 @@
 # Group 4: Instance & Java Detection - Auto-detect installations and Java paths
 # ============================================================================
 # Functions:
-#   Find-JavaInstallations   - Scan Adoptium, Oracle, Zulu, BellSoft, Microsoft
-#                               paths, JAVA_HOME, PATH for java.exe (not javaw.exe);
+#   Find-JavaInstallations   - Scan common paths, JAVA_HOME, PATH for java binary;
 #                               return sorted list with major version
-#   Find-AmpInstances        - Scan all fixed drives for server.properties
-#                               co-located with GTNH mod JARs in common AMP paths
-#   Find-PrismInstances      - Scan %APPDATA%/PrismLauncher/instances/ for
+#                               (Windows: Program Files; Linux: /usr/lib/jvm, etc.)
+#   Find-ServerInstances     - Scan drives/common paths for server.properties
+#                               co-located with GTNH mod JARs
+#   Find-PrismInstances      - Scan launcher instance directories for
 #                               GTNH client instances
 #   Test-IsGtnhInstance      - Check if a mods/ folder contains GregTech/GT5 JARs
 #   Get-InstalledGtnhVersion - Detect version from gtnh_version.txt or
 #                               changelog filenames, return 'unknown' if not found
 #
 # All registry and file system access is wrapped in try/catch blocks.
+# Cross-platform: uses $IsWindows/$IsLinux to branch platform-specific logic.
 # ============================================================================
 
 function Find-JavaInstallations {
     <#
     .SYNOPSIS
-        Scan common Java installation locations, JAVA_HOME, and PATH for java.exe.
+        Scan common Java installation locations, JAVA_HOME, and PATH for the java binary.
     .DESCRIPTION
-        Searches Adoptium, Oracle, Microsoft, Zulu, and BellSoft install directories
-        in both Program Files and Program Files (x86), plus JAVA_HOME and PATH.
-        For each found java.exe, runs -version to determine the major version.
+        On Windows: searches Adoptium, Oracle, Microsoft, Zulu, and BellSoft install
+        directories in Program Files and Program Files (x86), plus JAVA_HOME and PATH.
+        On Linux: searches /usr/lib/jvm/, /usr/local/lib/jvm/, /opt/java/, common
+        SDKMAN paths, plus JAVA_HOME and PATH (via 'which java').
+        For each found java binary, runs -version to determine the major version.
         Returns an array of PSCustomObjects sorted by MajorVersion descending.
     .OUTPUTS
         Array of [PSCustomObject]@{ Path; MajorVersion; VersionText }
@@ -32,37 +35,72 @@ function Find-JavaInstallations {
     Write-Step "Scanning for Java installations..."
 
     $found = @{}  # Use hashtable to deduplicate by resolved path
+    $javaBinaryName = if ($IsWindows) { 'java.exe' } else { 'java' }
 
-    # Common installation glob patterns
-    $searchPatterns = @(
-        "$env:ProgramFiles\Eclipse Adoptium\*\bin\java.exe"
-        "$env:ProgramFiles\Java\*\bin\java.exe"
-        "$env:ProgramFiles\Microsoft\*\bin\java.exe"
-        "$env:ProgramFiles\Zulu\*\bin\java.exe"
-        "$env:ProgramFiles\BellSoft\*\bin\java.exe"
-        "${env:ProgramFiles(x86)}\Eclipse Adoptium\*\bin\java.exe"
-        "${env:ProgramFiles(x86)}\Java\*\bin\java.exe"
-    )
+    if ($IsWindows) {
+        # Windows: scan Program Files directories
+        $searchPatterns = @(
+            "$env:ProgramFiles\Eclipse Adoptium\*\bin\java.exe"
+            "$env:ProgramFiles\Java\*\bin\java.exe"
+            "$env:ProgramFiles\Microsoft\*\bin\java.exe"
+            "$env:ProgramFiles\Zulu\*\bin\java.exe"
+            "$env:ProgramFiles\BellSoft\*\bin\java.exe"
+            "${env:ProgramFiles(x86)}\Eclipse Adoptium\*\bin\java.exe"
+            "${env:ProgramFiles(x86)}\Java\*\bin\java.exe"
+        )
 
-    foreach ($pattern in $searchPatterns) {
-        try {
-            $javaFiles = Get-Item -Path $pattern -ErrorAction SilentlyContinue
-            foreach ($item in $javaFiles) {
-                $resolved = $item.FullName
-                if (-not $found.ContainsKey($resolved)) {
-                    $found[$resolved] = $true
+        foreach ($pattern in $searchPatterns) {
+            try {
+                $javaFiles = Get-Item -Path $pattern -ErrorAction SilentlyContinue
+                foreach ($item in $javaFiles) {
+                    $resolved = $item.FullName
+                    if (-not $found.ContainsKey($resolved)) {
+                        $found[$resolved] = $true
+                    }
                 }
             }
+            catch {
+                # Silently continue if path doesn't exist
+            }
         }
-        catch {
-            # Silently continue if path doesn't exist
+    }
+    else {
+        # Linux: scan common JVM installation directories
+        $linuxSearchDirs = @(
+            '/usr/lib/jvm'
+            '/usr/local/lib/jvm'
+            '/opt/java'
+            '/opt/jdk'
+        )
+
+        # SDKMAN candidates
+        $sdkmanDir = Join-Path $HOME '.sdkman/candidates/java'
+        if (Test-Path -LiteralPath $sdkmanDir) {
+            $linuxSearchDirs += $sdkmanDir
+        }
+
+        foreach ($searchDir in $linuxSearchDirs) {
+            if (-not (Test-Path -LiteralPath $searchDir)) { continue }
+            try {
+                $javaBinaries = Get-ChildItem -LiteralPath $searchDir -Filter 'java' -Recurse -Depth 3 -ErrorAction SilentlyContinue |
+                    Where-Object { $_.FullName -like '*/bin/java' -and -not $_.PSIsContainer }
+                foreach ($item in $javaBinaries) {
+                    $resolved = $item.FullName
+                    if (-not $found.ContainsKey($resolved)) {
+                        $found[$resolved] = $true
+                    }
+                }
+            }
+            catch {
+                # Silently continue
+            }
         }
     }
 
-    # Check JAVA_HOME
+    # Check JAVA_HOME (cross-platform)
     if ($env:JAVA_HOME) {
         try {
-            $javaHomePath = Join-Path $env:JAVA_HOME 'bin\java.exe'
+            $javaHomePath = Join-Path $env:JAVA_HOME "bin/$javaBinaryName"
             if (Test-Path -LiteralPath $javaHomePath) {
                 $resolved = (Get-Item -LiteralPath $javaHomePath).FullName
                 if (-not $found.ContainsKey($resolved)) {
@@ -75,11 +113,21 @@ function Find-JavaInstallations {
         }
     }
 
-    # Check PATH via Get-Command
+    # Check PATH via Get-Command (cross-platform)
     try {
         $pathJava = Get-Command 'java' -ErrorAction SilentlyContinue
         if ($pathJava) {
             $resolved = $pathJava.Source
+            # Resolve symlinks on Linux
+            if ($IsLinux -and $resolved) {
+                try {
+                    $resolvedTarget = (Get-Item -LiteralPath $resolved).Target
+                    if ($resolvedTarget) { $resolved = $resolvedTarget }
+                }
+                catch {
+                    # Keep original path
+                }
+            }
             if ($resolved -and (-not $found.ContainsKey($resolved))) {
                 $found[$resolved] = $true
             }
@@ -89,7 +137,7 @@ function Find-JavaInstallations {
         # Silently continue
     }
 
-    # For each found java.exe, get version info
+    # For each found java binary, get version info
     $results = @()
     $seenVersions = @{}  # Deduplicate by version output (catches symlinks/shims)
 
@@ -244,14 +292,15 @@ function Get-InstalledGtnhVersion {
     return 'unknown'
 }
 
-function Find-AmpInstances {
+function Find-ServerInstances {
     <#
     .SYNOPSIS
-        Scan all fixed drives for GTNH server instances.
+        Scan common paths for GTNH server instances.
     .DESCRIPTION
-        Checks common server hosting paths (AMP/CubeCoders, standalone server folders,
-        common naming patterns) on each fixed drive for server.properties files
-        co-located with GTNH mod JARs.
+        On Windows: checks common server hosting paths (AMP/CubeCoders, standalone
+        server folders, common naming patterns) on each fixed drive.
+        On Linux: checks common server paths under /home, /opt, /srv, and ~.
+        Looks for server.properties files co-located with GTNH mod JARs.
     .OUTPUTS
         Array of [PSCustomObject]@{ Name; Path; Version }
     #>
@@ -261,38 +310,110 @@ function Find-AmpInstances {
     $results = @()
     $foundPaths = @{}  # Deduplicate
 
-    # Get all fixed drives
-    $drives = Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Free -ne $null }
+    if ($IsWindows) {
+        # Get all fixed drives
+        $drives = Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Free -ne $null }
 
-    $commonPaths = @(
-        'AMPDatastore'
-        'AMP'
-        'CubeCoders'
-        'CubeCoders\AMP'
-        'GameServers'
-        'Servers'
-        'MinecraftServers'
-        'Minecraft'
-        'GTNH'
-        'GT New Horizons'
-        'Program Files\CubeCoders'
-        'Program Files\AMP'
-        'Program Files\Minecraft'
-    )
+        $commonPaths = @(
+            'AMPDatastore'
+            'AMP'
+            'CubeCoders'
+            'CubeCoders\AMP'
+            'GameServers'
+            'Servers'
+            'MinecraftServers'
+            'Minecraft'
+            'GTNH'
+            'GT New Horizons'
+            'Program Files\CubeCoders'
+            'Program Files\AMP'
+            'Program Files\Minecraft'
+        )
 
-    foreach ($drive in $drives) {
-        $driveRoot = $drive.Root
+        foreach ($drive in $drives) {
+            $driveRoot = $drive.Root
 
-        # Check common paths
-        foreach ($subPath in $commonPaths) {
-            $searchRoot = Join-Path $driveRoot $subPath
-            if (-not (Test-Path -LiteralPath $searchRoot)) {
-                continue
+            # Check common paths
+            foreach ($subPath in $commonPaths) {
+                $searchRoot = Join-Path $driveRoot $subPath
+                if (-not (Test-Path -LiteralPath $searchRoot)) {
+                    continue
+                }
+
+                try {
+                    # Search up to depth 5 for server.properties
+                    $serverProps = Get-ChildItem -LiteralPath $searchRoot -Filter 'server.properties' -Recurse -Depth 5 -ErrorAction SilentlyContinue
+
+                    foreach ($prop in $serverProps) {
+                        $instanceDir = $prop.DirectoryName
+                        if ($foundPaths.ContainsKey($instanceDir)) { continue }
+
+                        $modsPath = Join-Path $instanceDir 'mods'
+
+                        if (Test-IsGtnhInstance -ModsPath $modsPath) {
+                            $name = Split-Path $instanceDir -Leaf
+                            $version = Get-InstalledGtnhVersion -InstancePath $instanceDir
+
+                            $results += [PSCustomObject]@{
+                                Name    = $name
+                                Path    = $instanceDir
+                                Version = $version
+                            }
+                            $foundPaths[$instanceDir] = $true
+                        }
+                    }
+                }
+                catch {
+                    # Silently continue if access denied or other error
+                }
             }
 
+            # Also check drive root for folders with "GTNH" or "horizons" in the name
             try {
-                # Search up to depth 5 for server.properties
-                $serverProps = Get-ChildItem -LiteralPath $searchRoot -Filter 'server.properties' -Recurse -Depth 5 -ErrorAction SilentlyContinue
+                $rootDirs = Get-ChildItem -LiteralPath $driveRoot -Directory -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Name -match 'gtnh|horizons|minecraft.*server' }
+
+                foreach ($dir in $rootDirs) {
+                    $serverPropsPath = Join-Path $dir.FullName 'server.properties'
+                    if ((Test-Path -LiteralPath $serverPropsPath) -and -not $foundPaths.ContainsKey($dir.FullName)) {
+                        $modsPath = Join-Path $dir.FullName 'mods'
+                        if (Test-IsGtnhInstance -ModsPath $modsPath) {
+                            $name = $dir.Name
+                            $version = Get-InstalledGtnhVersion -InstancePath $dir.FullName
+
+                            $results += [PSCustomObject]@{
+                                Name    = $name
+                                Path    = $dir.FullName
+                                Version = $version
+                            }
+                            $foundPaths[$dir.FullName] = $true
+                        }
+                    }
+                }
+            }
+            catch {
+                # Silently continue
+            }
+        }
+    }
+    else {
+        # Linux: check common server locations
+        $linuxSearchRoots = @(
+            '/opt'
+            '/srv'
+            (Join-Path $HOME 'Games')
+            (Join-Path $HOME 'games')
+            (Join-Path $HOME 'servers')
+            (Join-Path $HOME 'minecraft')
+            (Join-Path $HOME 'GTNH')
+            $HOME
+        )
+
+        foreach ($searchRoot in $linuxSearchRoots) {
+            if (-not (Test-Path -LiteralPath $searchRoot)) { continue }
+
+            try {
+                $serverProps = Get-ChildItem -LiteralPath $searchRoot -Filter 'server.properties' -Recurse -Depth 4 -ErrorAction SilentlyContinue
 
                 foreach ($prop in $serverProps) {
                     $instanceDir = $prop.DirectoryName
@@ -314,35 +435,8 @@ function Find-AmpInstances {
                 }
             }
             catch {
-                # Silently continue if access denied or other error
+                # Silently continue if access denied
             }
-        }
-
-        # Also check drive root for folders with "GTNH" or "horizons" in the name
-        try {
-            $rootDirs = Get-ChildItem -LiteralPath $driveRoot -Directory -ErrorAction SilentlyContinue |
-                Where-Object { $_.Name -match 'gtnh|horizons|minecraft.*server' }
-
-            foreach ($dir in $rootDirs) {
-                $serverPropsPath = Join-Path $dir.FullName 'server.properties'
-                if ((Test-Path -LiteralPath $serverPropsPath) -and -not $foundPaths.ContainsKey($dir.FullName)) {
-                    $modsPath = Join-Path $dir.FullName 'mods'
-                    if (Test-IsGtnhInstance -ModsPath $modsPath) {
-                        $name = $dir.Name
-                        $version = Get-InstalledGtnhVersion -InstancePath $dir.FullName
-
-                        $results += [PSCustomObject]@{
-                            Name    = $name
-                            Path    = $dir.FullName
-                            Version = $version
-                        }
-                        $foundPaths[$dir.FullName] = $true
-                    }
-                }
-            }
-        }
-        catch {
-            # Silently continue
         }
     }
 
@@ -355,8 +449,10 @@ function Find-PrismInstances {
     .SYNOPSIS
         Scan common launcher instance directories for GTNH client instances.
     .DESCRIPTION
-        Checks PrismLauncher, MultiMC, PolyMC, and ATLauncher instance directories
-        for GTNH client instances containing GregTech mod JARs.
+        On Windows: checks PrismLauncher, MultiMC, PolyMC, and ATLauncher instance
+        directories in APPDATA, LOCALAPPDATA, and drive roots.
+        On Linux: checks ~/.local/share/PrismLauncher/instances/,
+        ~/.local/share/multimc/instances/, ~/Games/, and other common paths.
     .OUTPUTS
         Array of [PSCustomObject]@{ Name; Path; Version }
     #>
@@ -365,23 +461,51 @@ function Find-PrismInstances {
 
     $results = @()
 
-    # All launcher instance directories to check
-    $launcherPaths = @(
-        (Join-Path $env:APPDATA 'PrismLauncher\instances')
-        (Join-Path $env:APPDATA 'MultiMC\instances')
-        (Join-Path $env:APPDATA 'PolyMC\instances')
-        (Join-Path $env:LOCALAPPDATA 'PrismLauncher\instances')
-        (Join-Path $env:LOCALAPPDATA 'MultiMC\instances')
-        (Join-Path $env:LOCALAPPDATA 'PolyMC\instances')
-        (Join-Path $env:APPDATA 'ATLauncher\instances')
-    )
+    # Build launcher paths based on platform
+    $launcherPaths = @()
 
-    # Also check common custom locations on all drives
-    $drives = Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Free -ne $null }
-    foreach ($drive in $drives) {
-        $driveRoot = $drive.Root
-        $launcherPaths += Join-Path $driveRoot 'PrismLauncher\instances'
-        $launcherPaths += Join-Path $driveRoot 'MultiMC\instances'
+    if ($IsWindows) {
+        $launcherPaths = @(
+            (Join-Path $env:APPDATA 'PrismLauncher\instances')
+            (Join-Path $env:APPDATA 'MultiMC\instances')
+            (Join-Path $env:APPDATA 'PolyMC\instances')
+            (Join-Path $env:LOCALAPPDATA 'PrismLauncher\instances')
+            (Join-Path $env:LOCALAPPDATA 'MultiMC\instances')
+            (Join-Path $env:LOCALAPPDATA 'PolyMC\instances')
+            (Join-Path $env:APPDATA 'ATLauncher\instances')
+        )
+
+        # Also check common custom locations on all drives
+        $drives = Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Free -ne $null }
+        foreach ($drive in $drives) {
+            $driveRoot = $drive.Root
+            $launcherPaths += Join-Path $driveRoot 'PrismLauncher\instances'
+            $launcherPaths += Join-Path $driveRoot 'MultiMC\instances'
+        }
+    }
+    else {
+        # Linux: XDG data directories and common locations
+        $xdgDataHome = $env:XDG_DATA_HOME
+        if (-not $xdgDataHome) {
+            $xdgDataHome = Join-Path $HOME '.local/share'
+        }
+
+        $launcherPaths = @(
+            (Join-Path $xdgDataHome 'PrismLauncher/instances')
+            (Join-Path $xdgDataHome 'multimc/instances')
+            (Join-Path $xdgDataHome 'PolyMC/instances')
+            (Join-Path $xdgDataHome 'ATLauncher/instances')
+            (Join-Path $HOME '.local/share/PrismLauncher/instances')
+            (Join-Path $HOME '.local/share/multimc/instances')
+            (Join-Path $HOME '.local/share/PolyMC/instances')
+            (Join-Path $HOME 'Games/PrismLauncher/instances')
+            (Join-Path $HOME 'Games/MultiMC/instances')
+            (Join-Path $HOME 'games/PrismLauncher/instances')
+            (Join-Path $HOME 'games/MultiMC/instances')
+            # Flatpak locations
+            (Join-Path $HOME '.var/app/org.prismlauncher.PrismLauncher/data/PrismLauncher/instances')
+            (Join-Path $HOME '.var/app/org.polymc.PolyMC/data/PolyMC/instances')
+        )
     }
 
     # Deduplicate paths
