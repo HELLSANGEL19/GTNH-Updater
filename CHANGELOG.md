@@ -16,7 +16,7 @@
 ### Improved
 - Client preservation list corrected: replaced config/journeymap with config/vendingmachine; optionsnf.txt replaces optionsof.txt
 - Server preservation list corrected: config/JourneyMapServer/ replaces journeymap/
-- README: fixed GTNH release cycle order (Experimental ΓåÆ Daily ΓåÆ Beta ΓåÆ Stable), mod count threshold (150+), preserved files lists, and a stray version string in the stable update description
+- README: fixed GTNH release cycle order (Experimental -> Daily -> Beta -> Stable), mod count threshold (150+), preserved files lists, and a stray version string in the stable update description
 - Mod scan selection prompt uses Read-Host directly to avoid double-processing by Read-UserInput
 - Help screen update description tightened for clarity
 
