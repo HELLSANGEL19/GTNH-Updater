@@ -216,7 +216,7 @@ function Invoke-CacheMenu {
                     if ($cachedFiles.Count -gt 0) {
                         if (Confirm-Action "Delete all $($cachedFiles.Count) cached file(s)?") {
                             try {
-                                Remove-Item -Path (Join-Path $cacheDir '*') -Force
+                                Get-ChildItem -LiteralPath $cacheDir -File | Remove-Item -Force
                                 Write-Success "Cache cleared."
                             }
                             catch {

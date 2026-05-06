@@ -37,7 +37,6 @@ function Get-ClientPreservationList {
     #>
     return @(
         'journeymap'
-        'config/journeymap'
         'options.txt'
         'servers.dat'
         'optionsof.txt'
@@ -46,6 +45,7 @@ function Get-ClientPreservationList {
         'opencomputers'
         'config/NEI'
         'config/shaders.properties'
+        'config/vendingmachine'
         'maps'
     )
 }
@@ -103,7 +103,6 @@ function Invoke-PreserveFiles {
             catch {
                 Write-Err "Failed to preserve '$item': $($_.Exception.Message)"
                 Write-Log "[ERROR] Preserve failed for '$item': $($_.Exception.ToString())"
-                Write-Log "[ERROR] Preservation failed for '$item': $($_.Exception.ToString())"
                 $failedItems += $item
             }
         }
@@ -164,7 +163,6 @@ function Invoke-RestoreFiles {
             catch {
                 Write-Err "Failed to restore '$item': $($_.Exception.Message)"
                 Write-Log "[ERROR] Restore failed for '$item': $($_.Exception.ToString())"
-                Write-Log "[ERROR] Restoration failed for '$item': $($_.Exception.ToString())"
             }
         }
     }

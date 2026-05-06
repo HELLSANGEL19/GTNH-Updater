@@ -212,6 +212,11 @@ function Read-UserInput {
         Write-Host "  $Prompt`: " -NoNewline -ForegroundColor White
     }
     $userInput = (Read-Host).Trim()
+    # Strip surrounding quotes (Windows "Copy as path" adds them)
+    if ($userInput -match '^"(.*)"$' -or $userInput -match "^'(.*)'$") { $userInput = $Matches[1] }
+    # Expand leading ~ to home directory (Linux/Mac path shorthand)
+    if ($userInput -match '^~[/\\]') { $userInput = $userInput -replace '^~', $HOME }
+    elseif ($userInput -eq '~') { $userInput = $HOME }
     $result = $userInput ? $userInput : $Default
     if (Get-Command Write-Log -ErrorAction SilentlyContinue) {
         Write-Log "[INPUT] $Prompt`: $result"

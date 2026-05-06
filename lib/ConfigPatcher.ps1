@@ -308,6 +308,10 @@ function Test-ConfigPatches {
                     $inTargetSection = $currentSection -eq $patch.Section
                 }
             }
+            elseif ($line -match '^\s*\}' -and -not [string]::IsNullOrEmpty($patch.Section)) {
+                $inTargetSection = $false
+                $currentSection = ''
+            }
             if ($inTargetSection -and $line -match $pattern) {
                 $currentValue = ($line -split '=', 2)[1].Trim()
                 break
@@ -452,9 +456,12 @@ function Invoke-ConfigBrowse {
     for ($i = 0; $i -lt $lines.Count; $i++) {
         $line = $lines[$i]
 
-        # Track section headers (lines with just a word and {)
+        # Track section headers and closings
         if ($line -match '^\s*"?([^"{}=#]+)"?\s*\{') {
             $currentSection = $Matches[1].Trim()
+        }
+        elseif ($line -match '^\s*\}') {
+            $currentSection = ''
         }
 
         # Match key=value lines: B:key=value, I:key=value, S:key=value, or plain key=value (.properties)
@@ -844,13 +851,17 @@ function Invoke-ConfigPatchMenu {
                             $_.FilePath -eq $t.FilePath -and $_.Key -eq $t.Key
                         }
                         if (-not $exists) {
-                            $Config.ConfigPatches += [PSCustomObject]@{
+                            $newPatch = [PSCustomObject]@{
                                 FilePath    = $t.FilePath
                                 Key         = $t.Key
                                 Value       = $t.Value
                                 Description = $t.Description
                                 Target      = 'both'
                             }
+                            if ($t.PSObject.Properties.Name -contains 'Section') {
+                                $newPatch | Add-Member -NotePropertyName 'Section' -NotePropertyValue $t.Section
+                            }
+                            $Config.ConfigPatches += $newPatch
                             $addedTemplateCount++
                         }
                     }
@@ -881,13 +892,17 @@ function Invoke-ConfigPatchMenu {
                                 default { 'both' }
                             }
 
-                            $Config.ConfigPatches += [PSCustomObject]@{
+                            $newPatch = [PSCustomObject]@{
                                 FilePath    = $selected.FilePath
                                 Key         = $selected.Key
                                 Value       = $selected.Value
                                 Description = $selected.Description
                                 Target      = $tTargetValue
                             }
+                            if ($selected.PSObject.Properties.Name -contains 'Section') {
+                                $newPatch | Add-Member -NotePropertyName 'Section' -NotePropertyValue $selected.Section
+                            }
+                            $Config.ConfigPatches += $newPatch
                             Save-Config -Config $Config
                             Write-Success "Added: $($selected.Name)"
                         }

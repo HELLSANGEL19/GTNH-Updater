@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.2.1-beta] - 2026-05-06
+
+### Added
+- Path input now strips surrounding quotes (Windows "Copy as path" behaviour) and expands leading ~ to the home directory
+- Config repair now expands tilde paths saved by Linux users on startup
+- Help screen now includes "What Gets Replaced" and "What Gets Preserved" sections
+- Config patches from browse/templates now preserve the Section field when added
+### Fixed
+- Config section tracking now resets on closing }, preventing keys from wrong sections matching patches
+- Self-update path calculation no longer breaks when the content root ends with a directory separator
+- Java process arguments now use ArgumentList array instead of a manually quoted string, fixing paths with spaces
+- Cache clear now uses Get-ChildItem | Remove-Item instead of a wildcard path to avoid edge cases
+- Removed duplicate error log lines in file preservation and restore error handlers
+### Improved
+- Client preservation list corrected: replaced config/journeymap with config/vendingmachine; optionsnf.txt replaces optionsof.txt
+- Server preservation list corrected: config/JourneyMapServer/ replaces journeymap/
+- README: fixed GTNH release cycle order (Experimental ΓåÆ Daily ΓåÆ Beta ΓåÆ Stable), mod count threshold (150+), preserved files lists, and a stray version string in the stable update description
+- Mod scan selection prompt uses Read-Host directly to avoid double-processing by Read-UserInput
+- Help screen update description tightened for clarity
+
+
 ## [0.2.0-beta] - 2026-05-05
 
 ### Added

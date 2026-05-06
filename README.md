@@ -1,6 +1,6 @@
 # GTNH Updater
 
-**Version 0.2.0-beta**
+**Version 0.2.1-beta**
 
 Automates updating [GregTech: New Horizons](https://www.gtnewhorizons.com/) server and client instances on Windows and Linux. Interactive and menu-driven. Works with any server setup and any launcher that uses a standard `.minecraft` folder structure (Prism Launcher, MultiMC, PolyMC, ATLauncher, etc.). Auto-detection finds common server paths and launcher directories, but any instance path can be entered manually.
 
@@ -64,7 +64,7 @@ If you only manage a server, you'll never be asked about client paths. The tool 
 
 When you select **Update GTNH** with the Stable channel:
 
-1. Shows a **Version 0.2.0-beta** listing all available releases (stable and beta/RC), newest first
+1. Shows a **Version 0.2.1-beta** listing all available releases (stable and beta/RC), newest first
 2. If both server and client are configured, asks which target. If only one is configured, it's selected automatically.
 3. Downloads the selected pack (with progress bar and speed display) and verifies integrity
 4. Extracts to a staging folder for preview
@@ -106,7 +106,7 @@ If something goes wrong mid-update, the tool offers automatic rollback for both 
 | Daily        | Dev builds from GitHub. Updated daily. Requires Java 21+. |
 | Experimental | Bleeding-edge builds from GitHub. May be unstable. Requires Java 21+. |
 
-GTNH's release cycle is: Daily -> Experimental -> Beta -> Stable. When you pick "Update GTNH" on the Stable channel, the version picker shows both stable and beta/RC releases from the [version history page](https://www.gtnewhorizons.com/version-history). No channel switching needed to install a beta.
+GTNH's release cycle is: Experimental -> Daily -> Beta -> Stable. When you pick "Update GTNH" on the Stable channel, the version picker shows both stable and beta/RC releases from the [version history page](https://www.gtnewhorizons.com/version-history). No channel switching needed to install a beta.
 
 Daily and Experimental channels use the official [gtnh-nightly-updater](https://github.com/GTNewHorizons/gtnh-nightly-updater) JAR, which downloads individual mods from the GTNH Maven. No Java 21+ is needed for stable updates.
 
@@ -139,7 +139,7 @@ On startup, the tool checks your custom mods list against the actual mods/ folde
 
 After every update, the tool automatically checks:
 - Critical directories exist (mods/, config/, libraries/)
-- Mod count is reasonable (400+ JARs expected for GTNH)
+- Mod count is reasonable (150+ JARs expected for GTNH)
 - GregTech core mod is present
 - No duplicate mods (catches cases like `xmod-2.0.3.jar` and `xmod-2.0.5.jar` both present)
 - Target-specific files (server.properties, options.txt, etc.)
@@ -213,14 +213,17 @@ For full protection, maintain your own backups:
 ## Files Preserved During Updates
 
 ### Server
-- `journeymap/` - Server JourneyMap data
+- `config/JourneyMapServer/` - Server JourneyMap UUID (clients lose map data if this is lost)
 - `serverutilities/` - Server Utilities config and data
 - `ops.json`, `whitelist.json`, `server.properties`
 - `banned-ips.json`, `banned-players.json`
 
 ### Client
 - `journeymap/` - Client JourneyMap waypoints and maps
-- `options.txt`, `optionsof.txt`, `servers.dat`
+- `config/NEI/` - NEI settings, hidden items, bookmarks
+- `config/shaders.properties` - Active shader selection
+- `config/vendingmachine/` - Vending machine favourites
+- `options.txt`, `optionsnf.txt`, `servers.dat`
 - `resourcepacks/`
 
 ## Troubleshooting

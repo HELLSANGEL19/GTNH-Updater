@@ -1017,7 +1017,7 @@ function Invoke-CustomModSettingsMenu {
                 }
                 Write-Host ""
                 Write-Host "  Enter numbers to mark as custom (e.g., 1,3,5), 'a' for all, or Enter to skip: " -NoNewline -ForegroundColor White
-                $scanInput = (Read-UserInput "Selection").Trim()
+                $scanInput = (Read-Host).Trim()
 
                 if ($scanInput) {
                     $toAdd = @()
@@ -1651,7 +1651,7 @@ function Invoke-ScriptUpdateCheck {
     $updatedFiles = 0
     try {
         Get-ChildItem -LiteralPath $contentRoot -Recurse -File | ForEach-Object {
-            $relativePath = $_.FullName.Substring($contentRoot.Length + 1)
+            $relativePath = $_.FullName.Substring($contentRoot.TrimEnd([IO.Path]::DirectorySeparatorChar).Length + 1)
             $destPath = Join-Path $scriptDir $relativePath
             $destDir = Split-Path -Parent $destPath
             if (-not (Test-Path -LiteralPath $destDir)) {
@@ -1946,45 +1946,68 @@ function Show-HelpScreen {
     Write-Host "  " -NoNewline
     Write-Host "Update GTNH" -ForegroundColor Cyan
     Write-Host "  Updates your server and/or client using your default channel." -ForegroundColor Gray
-    Write-Host "  Stable: shows a version picker with all releases (stable + beta)," -ForegroundColor Gray
-    Write-Host "  then downloads a full pack zip with preview before applying." -ForegroundColor Gray
-    Write-Host "  Daily/Experimental: uses the GTNH updater JAR (needs Java 21+)." -ForegroundColor Gray
-    Write-Host "  If only one target is configured, it's selected automatically." -ForegroundColor Gray
+    Write-Host "  Stable: shows a version picker (stable + beta/RC), downloads the" -ForegroundColor Gray
+    Write-Host "  pack zip, and shows a full mod comparison before anything changes." -ForegroundColor Gray
+    Write-Host "  Daily/Experimental: uses the official GTNH updater JAR (Java 21+)." -ForegroundColor Gray
+    Write-Host "  If only one target is configured it's selected automatically." -ForegroundColor Gray
+    Write-Host ""
+
+    Write-Host "  " -NoNewline
+    Write-Host "What Gets Replaced" -ForegroundColor Cyan
+    Write-Host "  On every update: mods/, config/, libraries/, resources/, scripts/" -ForegroundColor Gray
+    Write-Host "  are deleted and replaced with the new pack. Your world, server" -ForegroundColor Gray
+    Write-Host "  settings, and custom files are preserved automatically." -ForegroundColor Gray
+    Write-Host ""
+
+    Write-Host "  " -NoNewline
+    Write-Host "What Gets Preserved" -ForegroundColor Cyan
+    Write-Host "  Server: server.properties, ops.json, whitelist.json, banned lists," -ForegroundColor Gray
+    Write-Host "  serverutilities/, config/JourneyMapServer/" -ForegroundColor Gray
+    Write-Host "  Client: options.txt, servers.dat, journeymap/, resourcepacks/," -ForegroundColor Gray
+    Write-Host "  config/NEI/, config/shaders.properties" -ForegroundColor Gray
+    Write-Host "  Custom mods you've added are also preserved (see Custom Mods)." -ForegroundColor Gray
     Write-Host ""
 
     Write-Host "  " -NoNewline
     Write-Host "Custom Mods" -ForegroundColor Cyan
-    Write-Host "  Mods you added that aren't part of GTNH. Add them in Settings" -ForegroundColor Gray
-    Write-Host "  so they're preserved when you update. Use Scan to auto-detect" -ForegroundColor Gray
-    Write-Host "  them, or Browse to pick from your mods/ folder." -ForegroundColor Gray
-    Write-Host "  Use Validate to fix stale entries after updating mods manually." -ForegroundColor Gray
+    Write-Host "  Mods not part of GTNH that you've added yourself. Register them" -ForegroundColor Gray
+    Write-Host "  in Settings > Custom Mods so they survive updates." -ForegroundColor Gray
+    Write-Host "  Scan: auto-detects by comparing against the official pack." -ForegroundColor Gray
+    Write-Host "  Browse: pick from your mods/ folder interactively." -ForegroundColor Gray
+    Write-Host "  Validate: fixes stale entries when a mod's filename changed." -ForegroundColor Gray
     Write-Host ""
 
     Write-Host "  " -NoNewline
     Write-Host "Config Patches" -ForegroundColor Cyan
-    Write-Host "  Settings you always change (like disabling pollution). Save them" -ForegroundColor Gray
-    Write-Host "  as patches and they're re-applied automatically after every update." -ForegroundColor Gray
+    Write-Host "  Settings you always re-apply after updates (e.g. disable pollution," -ForegroundColor Gray
+    Write-Host "  rain explosions, AE2 channels). Save them once and they're applied" -ForegroundColor Gray
+    Write-Host "  automatically after every update. Settings > Config Patches." -ForegroundColor Gray
     Write-Host ""
 
     Write-Host "  " -NoNewline
     Write-Host "Channels" -ForegroundColor Cyan
-    Write-Host "  Stable = official releases. Daily = dev builds (updated daily)." -ForegroundColor Gray
-    Write-Host "  Experimental = bleeding edge (may be unstable)." -ForegroundColor Gray
-    Write-Host "  Change your channel in Settings > Update Preferences." -ForegroundColor Gray
+    Write-Host "  Stable  = official releases from gtnewhorizons.com (recommended)." -ForegroundColor Gray
+    Write-Host "  Daily   = dev builds updated daily. Requires Java 21+." -ForegroundColor Gray
+    Write-Host "  Experimental = bleeding edge, may be unstable. Requires Java 21+." -ForegroundColor Gray
+    Write-Host "  Release cycle: Experimental -> Daily -> Beta -> Stable." -ForegroundColor Gray
+    Write-Host "  Change channel in Settings > Update Preferences." -ForegroundColor Gray
     Write-Host ""
 
     Write-Host "  " -NoNewline
-    Write-Host "Backups" -ForegroundColor Cyan
-    Write-Host "  Always back up before updating. The script saves a rollback" -ForegroundColor Gray
-    Write-Host "  snapshot during updates, but your own backups are essential." -ForegroundColor Gray
+    Write-Host "Rollback" -ForegroundColor Cyan
+    Write-Host "  Before applying, a snapshot of everything being replaced is saved." -ForegroundColor Gray
+    Write-Host "  If the update fails mid-way, you'll be offered automatic rollback." -ForegroundColor Gray
+    Write-Host "  Snapshots are deleted after a successful update." -ForegroundColor Gray
     Write-Host ""
 
     Write-Host "  " -NoNewline
     Write-Host "Tips" -ForegroundColor Cyan
-    Write-Host "  * Use /text to search in any browse list." -ForegroundColor Gray
-    Write-Host "  * Type comma-separated numbers to select multiple items (1,3,5)." -ForegroundColor Gray
-    Write-Host "  * Press Enter on a prompt to accept the default value [shown]." -ForegroundColor Gray
-    Write-Host "  * Startup warnings (stale mods, missing paths) can be fixed in Settings." -ForegroundColor Gray
+    Write-Host "  * Use /text to search in any browse or version picker list." -ForegroundColor Gray
+    Write-Host "  * Comma-separated numbers select multiple items (e.g. 1,3,5)." -ForegroundColor Gray
+    Write-Host "  * Press Enter on any prompt to accept the default value [shown]." -ForegroundColor Gray
+    Write-Host "  * Paths with spaces work fine. Paste with quotes - they're stripped." -ForegroundColor Gray
+    Write-Host "  * On Linux, ~ in paths is expanded automatically." -ForegroundColor Gray
+    Write-Host "  * Startup warnings about stale mods or paths: fix in Settings." -ForegroundColor Gray
     Write-Host ""
 
     Wait-ForKey

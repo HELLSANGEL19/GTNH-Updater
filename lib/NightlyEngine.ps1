@@ -401,11 +401,11 @@ function Invoke-NightlyUpdaterJar {
         # Start the process and stream output
         $processInfo = New-Object System.Diagnostics.ProcessStartInfo
         $processInfo.FileName = $JavaPath
-        # Quote arguments that contain spaces to prevent path splitting
-        $quotedArgs = $javaArgs | ForEach-Object {
-            if ($_ -match '\s') { "`"$_`"" } else { $_ }
+        # Use ArgumentList (array) instead of Arguments (string) for correct
+        # handling of paths with spaces - no manual quoting needed
+        foreach ($arg in $javaArgs) {
+            $processInfo.ArgumentList.Add($arg)
         }
-        $processInfo.Arguments = $quotedArgs -join ' '
         $processInfo.RedirectStandardOutput = $true
         $processInfo.RedirectStandardError = $true
         $processInfo.UseShellExecute = $false

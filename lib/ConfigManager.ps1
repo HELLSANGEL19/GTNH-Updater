@@ -124,6 +124,13 @@ function Repair-Config {
         }
     }
 
+    # Expand ~ in path fields (Linux users may have saved tilde paths)
+    foreach ($field in @('ServerPath', 'ClientInstancePath', 'JavaPath', 'BackupDir')) {
+        $val = $Config.$field
+        if ($val -match '^~[/\\]') { $Config.$field = $val -replace '^~', $HOME; $repaired = $true }
+        elseif ($val -eq '~') { $Config.$field = $HOME; $repaired = $true }
+    }
+
     # Ensure array fields are actually arrays (protects against corrupt config)
     $arrayFields = @('CustomServerMods', 'CustomClientMods', 'ConfigPatches', 'UpdateHistory')
     foreach ($field in $arrayFields) {
