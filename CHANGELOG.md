@@ -24,9 +24,6 @@
 * Version string corrected in README and CHANGELOG
 * Dot-source paths use $script:ScriptDir consistently
 
-;;; LINES STARTING WITH ;;; ARE STRIPPED AND WON'T APPEAR IN THE CHANGELOG OR COMMIT
-
-
 ## [0.1.3-beta] - 2026-05-05
 
 ### Added
