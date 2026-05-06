@@ -1921,7 +1921,9 @@ function Invoke-UpdateHistory {
         Write-Host "$channel" -NoNewline -ForegroundColor $channelColor
         Write-Host "$target" -NoNewline -ForegroundColor White
         if ($entry.Details) {
-            Write-Host "  $($entry.Details)" -ForegroundColor DarkGray
+            # Details format: "+N -N ~N" (added/removed/updated mods)
+            $labeled = $entry.Details -replace '\+(\d+)', '+$1 added' -replace '-(\d+)', '-$1 removed' -replace '~(\d+)', '~$1 updated'
+            Write-Host "  $labeled" -ForegroundColor DarkGray
         } else {
             Write-Host ""
         }

@@ -23,6 +23,7 @@
 * Mod count verification threshold lowered from 400 to 150 JARs
 * Version string corrected in README and CHANGELOG
 * Dot-source paths use $script:ScriptDir consistently
+* Update history mod diff now shows labeled counts (e.g. `+9 added  -9 removed  ~179 updated`) instead of raw symbols
 
 ## [0.1.3-beta] - 2026-05-05
 
