@@ -46,8 +46,6 @@ if ($PSVersionTable.PSVersion.Major -lt 7) {
 # GLOBAL VARIABLES
 # ============================================================================
 
-$script:UpdaterVersion = '0.1.3.0-beta'
-
 $script:ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $script:ConfigPath = Join-Path $script:ScriptDir 'gtnh-updater-config.json'
 $script:LogDir = Join-Path $script:ScriptDir 'logs'
@@ -78,22 +76,28 @@ $script:CachedWebsiteReleases = $null
 # DOT-SOURCE LIB FILES (dependency order)
 # ============================================================================
 
-. "$ScriptDir\lib\DisplayHelpers.ps1"
-. "$ScriptDir\lib\Logging.ps1"
-. "$ScriptDir\lib\ConfigManager.ps1"
-. "$ScriptDir\lib\Detection.ps1"
-. "$ScriptDir\lib\SetupWizard.ps1"
-. "$ScriptDir\lib\NetworkApi.ps1"
-. "$ScriptDir\lib\FilePreservation.ps1"
-. "$ScriptDir\lib\CustomMods.ps1"
-. "$ScriptDir\lib\ConfigPatcher.ps1"
-. "$ScriptDir\lib\StableEngine.ps1"
-. "$ScriptDir\lib\NightlyEngine.ps1"
-. "$ScriptDir\lib\Verification.ps1"
-. "$ScriptDir\lib\BackupManager.ps1"
-. "$ScriptDir\lib\CacheManager.ps1"
-. "$ScriptDir\lib\HistoryVersion.ps1"
-. "$ScriptDir\lib\MenuSystem.ps1"
+. "$script:ScriptDir\lib\Version.ps1"
+. "$script:ScriptDir\lib\DisplayHelpers.ps1"
+. "$script:ScriptDir\lib\Logging.ps1"
+. "$script:ScriptDir\lib\ConfigManager.ps1"
+. "$script:ScriptDir\lib\Detection.ps1"
+. "$script:ScriptDir\lib\SetupWizard.ps1"
+. "$script:ScriptDir\lib\NetworkApi.ps1"
+. "$script:ScriptDir\lib\FilePreservation.ps1"
+. "$script:ScriptDir\lib\CustomMods.ps1"
+. "$script:ScriptDir\lib\ConfigPatcher.ps1"
+. "$script:ScriptDir\lib\StableEngine.ps1"
+. "$script:ScriptDir\lib\NightlyEngine.ps1"
+. "$script:ScriptDir\lib\Verification.ps1"
+. "$script:ScriptDir\lib\BackupManager.ps1"
+. "$script:ScriptDir\lib\CacheManager.ps1"
+. "$script:ScriptDir\lib\HistoryVersion.ps1"
+. "$script:ScriptDir\lib\MenuSystem.ps1"
+$script:DevMode = $false
+if ($script:ScriptDir -like '*-DEV*') {
+    . "$script:ScriptDir\lib\DevTools.ps1"
+    $script:DevMode = $true
+}
 
 # ============================================================================
 # ENTRY POINT

@@ -68,12 +68,16 @@ function Set-ConfigValue {
         $inTargetSection = [string]::IsNullOrEmpty($Section)
 
         for ($i = 0; $i -lt $lines.Count; $i++) {
-            # Track section headers
+            # Track section headers and closings
             if ($lines[$i] -match '^\s*"?([^"{}=#]+)"?\s*\{') {
                 $currentSection = $Matches[1].Trim()
                 if (-not [string]::IsNullOrEmpty($Section)) {
                     $inTargetSection = $currentSection -eq $Section
                 }
+            }
+            elseif ($lines[$i] -match '^\s*\}' -and -not [string]::IsNullOrEmpty($Section)) {
+                $inTargetSection = $false
+                $currentSection = ''
             }
 
             if ($inTargetSection -and $lines[$i] -match $pattern) {
@@ -169,6 +173,10 @@ function Invoke-ConfigPatches {
                     if (-not [string]::IsNullOrEmpty($patch.Section)) {
                         $inTargetSection = $currentSection -eq $patch.Section
                     }
+                }
+                elseif ($line -match '^\s*\}' -and -not [string]::IsNullOrEmpty($patch.Section)) {
+                    $inTargetSection = $false
+                    $currentSection = ''
                 }
                 if ($inTargetSection -and $line -match $pattern) {
                     $keyFound = $true

@@ -1,6 +1,6 @@
 # GTNH Updater
 
-**Version 0.1.3.0-beta**
+**Version 0.2.0-beta**
 
 Automates updating [GregTech: New Horizons](https://www.gtnewhorizons.com/) server and client instances on Windows and Linux. Interactive and menu-driven. Works with any server setup and any launcher that uses a standard `.minecraft` folder structure (Prism Launcher, MultiMC, PolyMC, ATLauncher, etc.). Auto-detection finds common server paths and launcher directories, but any instance path can be entered manually.
 
@@ -64,7 +64,7 @@ If you only manage a server, you'll never be asked about client paths. The tool 
 
 When you select **Update GTNH** with the Stable channel:
 
-1. Shows a **version picker** listing all available releases (stable and beta/RC), newest first
+1. Shows a **Version 0.2.0-beta** listing all available releases (stable and beta/RC), newest first
 2. If both server and client are configured, asks which target. If only one is configured, it's selected automatically.
 3. Downloads the selected pack (with progress bar and speed display) and verifies integrity
 4. Extracts to a staging folder for preview

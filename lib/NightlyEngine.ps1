@@ -336,7 +336,6 @@ function Invoke-NightlyUpdate {
         else { $Config.InstalledClientVersion = $versionLabel }
         Save-Config -Config $Config
     }
-    Save-Config -Config $Config
 
     # Clean up
     if ($customModTempDir -and (Test-Path -LiteralPath $customModTempDir)) {

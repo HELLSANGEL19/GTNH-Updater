@@ -1,6 +1,33 @@
 # Changelog
 
-## [0.1.3.0-beta] - 2026-05-05
+## [0.2.0-beta] - 2026-05-05
+
+### Added
+
+* lib/Version.ps1 extracted as a dedicated version file; version string removed from main script
+* Client preservation now includes the full config/NEI directory and config/shaders.properties
+
+### Fixed
+
+* Config patcher now correctly resets section tracking on closing braces, preventing cross-section key matches
+* Duplicate Save-Config call removed from nightly update flow
+* SHA256 hash fetch now has a 10-second timeout to avoid hanging on slow responses
+* Fixed a brace alignment bug in stable engine hash-fetching block
+* $latestNorm moved outside server/client blocks so client version comparison works correctly
+
+### Improved
+
+* Pack type display now shows human-readable labels (Java 17+ / Java 8) instead of raw config values
+* Custom mod marking prompt consolidated into a single Read-UserInput call
+* Update history table widened to accommodate longer version strings
+* Mod count verification threshold lowered from 400 to 150 JARs
+* Version string corrected in README and CHANGELOG
+* Dot-source paths use $script:ScriptDir consistently
+
+;;; LINES STARTING WITH ;;; ARE STRIPPED AND WON'T APPEAR IN THE CHANGELOG OR COMMIT
+
+
+## [0.1.3-beta] - 2026-05-05
 
 ### Added
 - **Linux support**: New `Launch-GTNHUpdater.sh` launcher with package manager detection (apt, dnf, pacman, zypper, snap)

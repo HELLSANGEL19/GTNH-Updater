@@ -54,12 +54,12 @@ function Show-MainMenu {
 
     # Normalize versions for comparison (trim whitespace, strip leading 'v')
     $normalizeVer = { param($v) if ($v) { $v.Trim().TrimStart('v', 'V') } else { $null } }
+    $latestNorm = & $normalizeVer $latestForChannel
 
     # Server version display
     if ($hasServer) {
     Write-Host "  Server:         " -NoNewline -ForegroundColor Gray
     $serverNorm = & $normalizeVer $Config.InstalledServerVersion
-    $latestNorm = & $normalizeVer $latestForChannel
     if ($serverNorm -and $latestNorm -and $serverNorm -eq $latestNorm) {
         Write-Host "$serverVer " -NoNewline -ForegroundColor Green
         Write-Host "(up to date)" -ForegroundColor DarkGreen
@@ -142,6 +142,12 @@ function Show-MainMenu {
     Write-MenuOption "4" "View GTNH changelog"
     Write-MenuOption "5" "Update history"
     Write-MenuOption "H" "Help"
+    if ($script:DevMode) {
+        Write-Host ""
+        Write-Host "  [" -NoNewline
+        Write-Host "D" -ForegroundColor DarkYellow -NoNewline
+        Write-Host "] Dev tools"
+    }
     Write-Host ""
     Write-MenuOption "Q" "Quit"
 }
@@ -441,7 +447,7 @@ function Invoke-UpdatePreferencesMenu {
         Write-Header "Settings > Update Preferences"
 
         $channel = $Config.DefaultChannel ?? 'stable'
-        $javaVer = $Config.JavaVersion ?? 'java17'
+        $javaVer = if (($Config.JavaVersion ?? 'java17') -eq 'java17') { 'Java 17+' } else { 'Java 8' }
         $serverVer = $Config.InstalledServerVersion ? $Config.InstalledServerVersion : '(unknown)'
         $clientVer = $Config.InstalledClientVersion ? $Config.InstalledClientVersion : '(unknown)'
         $autoCheck = ($Config.AutoCheckUpdates ?? $true) ? 'Yes' : 'No'
@@ -1884,8 +1890,8 @@ function Invoke-UpdateHistory {
 
     Write-Info "Recent updates (newest first):"
     Write-Host ""
-    Write-Host "  Date                  Version                Channel        Target" -ForegroundColor White
-    Write-Host "  $('-' * 72)" -ForegroundColor DarkGray
+    Write-Host "  Date                  Version                    Channel        Target" -ForegroundColor White
+    Write-Host "  $('-' * 76)" -ForegroundColor DarkGray
 
     foreach ($entry in $entries) {
         # Handle Date being either a DateTime object or a string
@@ -1898,7 +1904,7 @@ function Invoke-UpdateHistory {
             }
         }
         $date = $dateStr
-        $version = ($entry.Version ?? '(unknown)').PadRight(22)
+        $version = ($entry.Version ?? '(unknown)').PadRight(26)
         $channel = ($entry.Channel ?? '(unknown)').PadRight(14)
         $target = $entry.Target ?? '(unknown)'
 
@@ -2366,6 +2372,9 @@ function Invoke-MainLoop {
                 { $_ -eq 'H' -or $_ -eq 'h' } {
                     # Help
                     Show-HelpScreen
+                }
+                { $_ -eq 'D' -or $_ -eq 'd' } {
+                    if ($script:DevMode) { Invoke-DevTools }
                 }
                 { $_ -eq 'Q' -or $_ -eq 'q' } {
                     Write-Host ""

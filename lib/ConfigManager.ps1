@@ -183,7 +183,7 @@ function Show-CurrentConfig {
     Write-Info "Client path:          $($Config.ClientInstancePath ? $Config.ClientInstancePath : '(not set)')"
     Write-Info "Java path:            $($Config.JavaPath ? $Config.JavaPath : '(not set)')"
     Write-Info "Default channel:      $($Config.DefaultChannel ?? 'stable')"
-    Write-Info "Pack type:            $($Config.JavaVersion ?? 'java17')"
+    Write-Info "Pack type:            $(if (($Config.JavaVersion ?? 'java17') -eq 'java17') { 'Java 17+' } else { 'Java 8' })"
     Write-Info "Backup enabled:       $($Config.BackupEnabled ? 'Yes' : 'No')"
     Write-Info "Backup directory:     $($Config.BackupDir ? $Config.BackupDir : '(default)')"
     Write-Info "Backup retention:     $($Config.BackupRetention ?? 5)"

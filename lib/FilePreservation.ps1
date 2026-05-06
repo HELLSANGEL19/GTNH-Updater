@@ -44,7 +44,8 @@ function Get-ClientPreservationList {
         'optionsnf.txt'
         'resourcepacks'
         'opencomputers'
-        'config/NEI.cfg'
+        'config/NEI'
+        'config/shaders.properties'
         'maps'
     )
 }

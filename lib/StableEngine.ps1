@@ -261,7 +261,7 @@ function Invoke-StableUpdate {
     $hashUrl = "${zipUrl}.sha256"
     $expectedHash = $null
     try {
-        $hashResponse = Invoke-WebRequest -Uri $hashUrl -UseBasicParsing -ErrorAction SilentlyContinue
+        $hashResponse = Invoke-WebRequest -Uri $hashUrl -UseBasicParsing -TimeoutSec 10 -ErrorAction SilentlyContinue
         if ($hashResponse -and $hashResponse.Content) {
             # Hash files typically contain "hash  filename" or just the hash
             $hashContent = $hashResponse.Content.Trim()
@@ -269,7 +269,7 @@ function Invoke-StableUpdate {
                 $expectedHash = $Matches[1]
             }
         }
-        }
+    }
     catch {
         $errStatus = $null
         if ($_.Exception.Response) { $errStatus = [int]$_.Exception.Response.StatusCode }
@@ -458,8 +458,7 @@ function Invoke-StableUpdate {
         # ── Step 7: Interactive custom mod marking ────────────────────────────
         Write-Host ""
         Write-Host "  Any of these your custom mods? They'll be preserved during updates." -ForegroundColor White
-        Write-Host "  Enter numbers separated by commas (e.g., 1,3,5), 'a' for all, or Enter to skip: " -NoNewline -ForegroundColor White
-        $markInput = (Read-UserInput "Mark custom mods").Trim()
+        $markInput = (Read-UserInput "Mark custom mods (numbers separated by commas, 'a' for all, or Enter to skip)").Trim()
 
         if ($markInput) {
             $newCustom = @()

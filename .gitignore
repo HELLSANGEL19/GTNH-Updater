@@ -16,3 +16,8 @@ gtnh-updater-config.broken-*.json
 
 # Lock file (prevents concurrent runs)
 .updater.lock
+
+# Dev tools
+kiro.bat
+lib/DevTools.ps1
+
