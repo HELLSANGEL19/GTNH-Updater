@@ -1,6 +1,6 @@
 # GTNH Updater
 
-**Version 0.2.1-beta**
+**Version 0.3.0-beta**
 
 Automates updating [GregTech: New Horizons](https://www.gtnewhorizons.com/) server and client instances on Windows and Linux. Interactive and menu-driven. Works with any server setup and any launcher that uses a standard `.minecraft` folder structure (Prism Launcher, MultiMC, PolyMC, ATLauncher, etc.). Auto-detection finds common server paths and launcher directories, but any instance path can be entered manually.
 
@@ -57,6 +57,7 @@ On first run, the wizard asks:
 3. Detects GTNH instances (skips server or client steps based on your answer)
 4. Sets preferences (channel, pack type, version)
 5. Optionally configures custom mods and config patches
+6. Optionally sets up a second profile (e.g. a daily test instance)
 
 If you only manage a server, you'll never be asked about client paths. The tool adapts to your setup.
 
@@ -64,7 +65,7 @@ If you only manage a server, you'll never be asked about client paths. The tool 
 
 When you select **Update GTNH** with the Stable channel:
 
-1. Shows a **Version 0.2.1-beta** listing all available releases (stable and beta/RC), newest first
+1. Shows a **Version 0.3.0-beta** listing all available releases (stable and beta/RC), newest first
 2. If both server and client are configured, asks which target. If only one is configured, it's selected automatically.
 3. Downloads the selected pack (with progress bar and speed display) and verifies integrity
 4. Extracts to a staging folder for preview
@@ -121,6 +122,8 @@ Settings you always change after an update (like disabling pollution) can be sav
 - **Export/import** patches to share with friends
 - **Test** patches without applying them
 
+**Auto-detection**: During stable updates, the updater automatically compares your config files against the pack's defaults to detect settings you have changed. Confirmed changes are saved as patches automatically — no manual setup needed. You can also trigger a manual scan at any time from Settings > Config Patches > Re-scan, which downloads the current version's pack zip (or uses the cache) and compares it against your instance.
+
 Supports Forge `.cfg` files, `.properties` files, and `server.properties`. Section-aware matching handles duplicate keys in different config sections.
 
 ### Custom Mods
@@ -172,6 +175,28 @@ The updater automatically detects your installed GTNH version from changelog fil
 
 The updater checks for new versions of itself on startup. If a newer release is available on GitHub, it offers to download and install the update automatically. After updating, it exits so you can restart with the new version. No manual download needed.
 
+### Multiple Profiles
+
+Profiles let you manage multiple independent GTNH instances — for example, a main server and a daily/experimental test instance — each with its own paths, channel, custom mods, config patches, and version tracking.
+
+Each profile is a separate config file in the updater folder:
+
+```
+gtnh-updater-config.json           ← default profile
+gtnh-updater-config-daily.json     ← "daily" profile
+gtnh-updater-config-experimental.json
+```
+
+**At startup**, if more than one profile exists, you'll be asked which one to use. If you only have one profile (the common case), startup is unchanged.
+
+**In Settings > Profiles** you can:
+- **Create** a new profile — either copied from the current one (same paths, mods, patches as a starting point) or started fresh with the setup wizard
+- **Switch** to a different profile mid-session
+- **Rename** the active profile's display label
+- **Delete** a profile (blocked if it's the only one)
+
+The active profile name is shown on the main menu status line (only when a non-default profile is active).
+
 ## Main Menu
 
 ```
@@ -193,11 +218,12 @@ Settings are organized into groups:
 - **Instance paths** - Server, client, and Java paths (with platform-appropriate examples)
 - **Update preferences** - Default channel, Java version for downloads, installed version, auto-update check
 - **Custom mods** - Scan, browse, add, validate, remove, or clear (auto-selects server/client if only one is configured)
-- **Config patches** - Browse, add, edit, import/export, test, or clear patches
+- **Config patches** - Browse, add, edit, import/export, test, re-scan for changes, or clear patches
 - **Backups and cache** - Backup settings, manage backups, manage download cache
 - **Re-run setup wizard** - Start the guided setup again
 - **Export config [E]** - Save your full configuration to a file
 - **Import config [I]** - Restore configuration from a file
+- **Profiles [P]** - Create and manage multiple profiles (see below)
 
 ## Backups
 
@@ -241,6 +267,7 @@ For full protection, maintain your own backups:
 | Duplicate mods detected | Multiple versions of the same mod in your mods/ folder. Remove the older one(s). |
 | Config file is broken | Delete `gtnh-updater-config.json` and re-run. The setup wizard will start fresh. |
 | Want to reset everything | Delete `gtnh-updater-config.json`, `cache/`, `logs/`, and `.temp/`. |
+| Wrong profile loaded | Select the correct profile at startup, or switch via Settings > Profiles. |
 
 ## Changelog
 

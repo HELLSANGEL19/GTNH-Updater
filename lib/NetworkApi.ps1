@@ -26,6 +26,28 @@
 # failures, HTTP errors, and rate limiting.
 # ============================================================================
 
+function Test-IsNetworkException {
+    param([Parameter(Mandatory)]$ex)
+    return ($ex -is [System.Net.WebException] -or
+            $ex.InnerException -is [System.Net.WebException] -or
+            $ex -is [System.Net.Http.HttpRequestException] -or
+            $ex.InnerException -is [System.Net.Http.HttpRequestException])
+}
+
+function New-ZipUrls {
+    param(
+        [Parameter(Mandatory)][string]$Version,
+        [string]$PackType = 'java17'
+    )
+    $javaSuffix = $PackType -eq 'java17' ? 'Java_17-25' : 'Java_8'
+    return [PSCustomObject]@{
+        ServerZipName = "GT_New_Horizons_${Version}_Server_${javaSuffix}.zip"
+        ServerZipUrl  = "$($script:GtnhDownloadsBase)/ServerPacks/GT_New_Horizons_${Version}_Server_${javaSuffix}.zip"
+        ClientZipName = "GT_New_Horizons_${Version}_${javaSuffix}.zip"
+        ClientZipUrl  = "$($script:GtnhDownloadsBase)/Multi_mc_downloads/GT_New_Horizons_${Version}_${javaSuffix}.zip"
+    }
+}
+
 function Invoke-GitHubApi {
     <#
     .SYNOPSIS
@@ -192,10 +214,7 @@ function Get-LatestStableRelease {
     }
     catch {
         $ex = $_.Exception
-        if ($ex -is [System.Net.WebException] -or
-            $ex.InnerException -is [System.Net.WebException] -or
-            $ex -is [System.Net.Http.HttpRequestException] -or
-            $ex.InnerException -is [System.Net.Http.HttpRequestException]) {
+        if (Test-IsNetworkException $ex) {
             Write-Err "Network request failed. Check your internet connection."
             Write-Log "[ERROR] Network failure for downloads page - $($ex.Message)"
         }
@@ -252,29 +271,22 @@ function Get-LatestStableReleaseFallback {
 
         # Find the exact filename for this version
         $serverFileMatch = [regex]::Match($content, "(GT_New_Horizons_${version}_Server_${javaLabel}[^""]*\.zip)")
-        $javaSuffix = $PackType -eq 'java17' ? 'Java_17-25' : 'Java_8'
-        $serverZipName = $serverFileMatch.Success ? $serverFileMatch.Groups[1].Value : "GT_New_Horizons_${version}_Server_${javaSuffix}.zip"
-        $serverZipUrl = "$($script:GtnhDownloadsBase)/ServerPacks/$serverZipName"
-
-        # Construct client URL from same version
-        $clientZipName = "GT_New_Horizons_${version}_${javaSuffix}.zip"
-        $clientZipUrl = "$($script:GtnhDownloadsBase)/Multi_mc_downloads/$clientZipName"
+        $urls = New-ZipUrls -Version $version -PackType $PackType
+        $serverZipName = $serverFileMatch.Success ? $serverFileMatch.Groups[1].Value : $urls.ServerZipName
+        $serverZipUrl  = "$($script:GtnhDownloadsBase)/ServerPacks/$serverZipName"
 
         return [PSCustomObject]@{
             Version       = $version
             ServerZipUrl  = $serverZipUrl
             ServerZipName = $serverZipName
-            ClientZipUrl  = $clientZipUrl
-            ClientZipName = $clientZipName
+            ClientZipUrl  = $urls.ClientZipUrl
+            ClientZipName = $urls.ClientZipName
             ReleaseUrl    = 'https://www.gtnewhorizons.com/downloads/'
         }
     }
     catch {
         $ex = $_.Exception
-        if ($ex -is [System.Net.WebException] -or
-            $ex.InnerException -is [System.Net.WebException] -or
-            $ex -is [System.Net.Http.HttpRequestException] -or
-            $ex.InnerException -is [System.Net.Http.HttpRequestException]) {
+        if (Test-IsNetworkException $ex) {
             Write-Err "Network request failed. Check your internet connection."
             Write-Log "[ERROR] Network failure for fallback file listing - $($ex.Message)"
         }
@@ -397,7 +409,7 @@ function Invoke-FileDownload {
 
         # Save to cache folder
         $cacheDir = $script:CacheDir
-        if (-not $cacheDir) { $cacheDir = Join-Path (Split-Path -Parent $PSScriptRoot) 'cache' }
+        if (-not $cacheDir) { $cacheDir = Join-Path $script:ScriptDir 'cache' }
         if (-not (Test-Path -LiteralPath $cacheDir)) {
             New-Item -Path $cacheDir -ItemType Directory -Force | Out-Null
         }
@@ -418,10 +430,7 @@ function Invoke-FileDownload {
         Write-Host "`r$(' ' * 80)"
 
         $ex = $_.Exception
-        if ($ex -is [System.Net.WebException] -or
-            $ex.InnerException -is [System.Net.WebException] -or
-            $ex -is [System.Net.Http.HttpRequestException] -or
-            $ex.InnerException -is [System.Net.Http.HttpRequestException]) {
+        if (Test-IsNetworkException $ex) {
             Write-Err "Download failed. Check your internet connection."
             Write-Log "[ERROR] Download network failure for $Url - $($ex.Message)"
         }
@@ -563,10 +572,7 @@ function Get-OfficialModList {
     }
     catch {
         $ex = $_.Exception
-        if ($ex -is [System.Net.WebException] -or
-            $ex.InnerException -is [System.Net.WebException] -or
-            $ex -is [System.Net.Http.HttpRequestException] -or
-            $ex.InnerException -is [System.Net.Http.HttpRequestException]) {
+        if (Test-IsNetworkException $ex) {
             Write-Log "[WARN] Could not fetch mod list for $Version (network error)"
         }
         else {
@@ -632,19 +638,16 @@ function Get-WebsiteReleases {
                 $date = $Matches[1]
             }
 
-            $serverZipName = "GT_New_Horizons_${version}_Server_${javaSuffix}.zip"
-            $serverZipUrl = "$($script:GtnhDownloadsBase)/ServerPacks/$serverZipName"
-            $clientZipName = "GT_New_Horizons_${version}_${javaSuffix}.zip"
-            $clientZipUrl = "$($script:GtnhDownloadsBase)/Multi_mc_downloads/$clientZipName"
+            $urls = New-ZipUrls -Version $version -PackType $PackType
 
             $releases += [PSCustomObject]@{
                 Version       = $version
                 Type          = $type
                 Date          = $date
-                ServerZipUrl  = $serverZipUrl
-                ServerZipName = $serverZipName
-                ClientZipUrl  = $clientZipUrl
-                ClientZipName = $clientZipName
+                ServerZipUrl  = $urls.ServerZipUrl
+                ServerZipName = $urls.ServerZipName
+                ClientZipUrl  = $urls.ClientZipUrl
+                ClientZipName = $urls.ClientZipName
                 ReleaseUrl    = $versionHistoryUrl
             }
         }
@@ -657,10 +660,7 @@ function Get-WebsiteReleases {
     }
     catch {
         $ex = $_.Exception
-        if ($ex -is [System.Net.WebException] -or
-            $ex.InnerException -is [System.Net.WebException] -or
-            $ex -is [System.Net.Http.HttpRequestException] -or
-            $ex.InnerException -is [System.Net.Http.HttpRequestException]) {
+        if (Test-IsNetworkException $ex) {
             Write-Err "Network request failed. Check your internet connection."
             Write-Log "[ERROR] Network failure for version history page - $($ex.Message)"
         }

@@ -112,7 +112,7 @@ function Invoke-NightlyUpdate {
     $customModTempDir = Join-Path $script:TempDir 'nightly-custom-mods'
 
     if ($customModTempDir -and (Test-Path -LiteralPath $customModTempDir)) {
-        Remove-Item -LiteralPath $customModTempDir -Recurse -Force
+        Remove-TempDir $customModTempDir
     }
 
     $modsPath = Join-Path $instancePath 'mods'
@@ -141,9 +141,7 @@ function Invoke-NightlyUpdate {
         Write-Err "Backup failed. Update cancelled for safety."
         Write-Info "Fix the backup issue or disable backups in Settings, then try again."
         # Clean up temp dir before returning
-        if ($customModTempDir -and (Test-Path -LiteralPath $customModTempDir)) {
-            try { Remove-Item -LiteralPath $customModTempDir -Recurse -Force } catch {}
-        }
+        Remove-TempDir $customModTempDir
         return
     }
 
@@ -151,20 +149,14 @@ function Invoke-NightlyUpdate {
     Write-Step "Preserving critical files..."
 
     $preserveTempDir = Join-Path $script:TempDir 'nightly-preserved'
-    if (Test-Path -LiteralPath $preserveTempDir) {
-        Remove-Item -LiteralPath $preserveTempDir -Recurse -Force
-    }
+    Remove-TempDir $preserveTempDir
     $preserveOk = Invoke-PreserveFiles -InstancePath $instancePath -Target $Target -TempDir $preserveTempDir
     if (-not $preserveOk) {
         Write-Warn "Some files could not be preserved. They may be lost during the update."
         if (-not (Confirm-Action "Continue anyway?")) {
             Write-Info "Update cancelled."
-            if ($customModTempDir -and (Test-Path -LiteralPath $customModTempDir)) {
-                try { Remove-Item -LiteralPath $customModTempDir -Recurse -Force } catch {}
-            }
-            if ($preserveTempDir -and (Test-Path -LiteralPath $preserveTempDir)) {
-                try { Remove-Item -LiteralPath $preserveTempDir -Recurse -Force } catch {}
-            }
+            Remove-TempDir $customModTempDir
+            Remove-TempDir $preserveTempDir
             return
         }
     }
@@ -173,9 +165,7 @@ function Invoke-NightlyUpdate {
     Write-Step "Saving rollback snapshot..."
 
     $nightlyRollbackDir = Join-Path $script:TempDir "rollback-nightly-${Target}"
-    if (Test-Path -LiteralPath $nightlyRollbackDir) {
-        try { Remove-Item -LiteralPath $nightlyRollbackDir -Recurse -Force } catch {}
-    }
+    Remove-TempDir $nightlyRollbackDir
     New-Item -Path $nightlyRollbackDir -ItemType Directory -Force | Out-Null
 
     $nightlyFoldersToSnapshot = @('mods', 'config', 'resources', 'scripts', 'shaderpacks')
@@ -195,27 +185,13 @@ function Invoke-NightlyUpdate {
 
     # ── Backup confirmation before running ──────────────────────────────────
     Write-Host ""
-    if ($Target -eq 'server') {
-        Write-Host "  ╔══════════════════════════════════════════════════════════════╗" -ForegroundColor Red
-        Write-Host "  ║  Back up your server and make sure it is STOPPED.           ║" -ForegroundColor Red
-        Write-Host "  ╚══════════════════════════════════════════════════════════════╝" -ForegroundColor Red
-    } else {
-        Write-Host "  ╔══════════════════════════════════════════════════════════════╗" -ForegroundColor DarkYellow
-        Write-Host "  ║  Back up your client instance before continuing.            ║" -ForegroundColor DarkYellow
-        Write-Host "  ╚══════════════════════════════════════════════════════════════╝" -ForegroundColor DarkYellow
-    }
+    Write-BackupWarning -Target $Target
     Write-Host ""
     if (-not (Confirm-Action "Ready to proceed? Instance is backed up?")) {
         Write-Info "Update cancelled."
-        if ($customModTempDir -and (Test-Path -LiteralPath $customModTempDir)) {
-            try { Remove-Item -LiteralPath $customModTempDir -Recurse -Force } catch {}
-        }
-        if ($nightlyRollbackDir -and (Test-Path -LiteralPath $nightlyRollbackDir)) {
-            try { Remove-Item -LiteralPath $nightlyRollbackDir -Recurse -Force } catch {}
-        }
-        if ($preserveTempDir -and (Test-Path -LiteralPath $preserveTempDir)) {
-            try { Remove-Item -LiteralPath $preserveTempDir -Recurse -Force } catch {}
-        }
+        Remove-TempDir $customModTempDir
+        Remove-TempDir $nightlyRollbackDir
+        Remove-TempDir $preserveTempDir
         return
     }
 
@@ -266,90 +242,87 @@ function Invoke-NightlyUpdate {
             }
         }
 
-        # Clean up temp dirs before returning
-        if ($customModTempDir -and (Test-Path -LiteralPath $customModTempDir)) {
-            try { Remove-Item -LiteralPath $customModTempDir -Recurse -Force } catch {}
-        }
-        if ($nightlyRollbackDir -and (Test-Path -LiteralPath $nightlyRollbackDir)) {
-            try { Remove-Item -LiteralPath $nightlyRollbackDir -Recurse -Force } catch {}
-        }
+        Remove-TempDir $customModTempDir
+        Remove-TempDir $nightlyRollbackDir
+        Remove-TempDir $preserveTempDir
         return
     }
 
-    Write-Host ""
+    try {
+        Write-Host ""
 
-    # ── Step 4b: Restore preserved files ────────────────────────────────────────
-    Write-Step "Restoring preserved files..."
-    if ($preserveTempDir -and (Test-Path -LiteralPath $preserveTempDir)) {
-        Invoke-RestoreFiles -InstancePath $instancePath -Target $Target -TempDir $preserveTempDir
-    }
-
-    # ── Step 5: Restore custom mods ───────────────────────────────────────────
-    Write-Step "Restoring custom mods..."
-
-    if ($savedMods.Count -gt 0 -and (Test-Path -LiteralPath $customModTempDir)) {
-        $modsDir = Join-Path $instancePath 'mods'
-        if (-not (Test-Path -LiteralPath $modsDir)) {
-            New-Item -Path $modsDir -ItemType Directory -Force | Out-Null
+        # ── Step 4b: Restore preserved files ─────────────────────────────────
+        Write-Step "Restoring preserved files..."
+        if ($preserveTempDir -and (Test-Path -LiteralPath $preserveTempDir)) {
+            Invoke-RestoreFiles -InstancePath $instancePath -Target $Target -TempDir $preserveTempDir
         }
-        $restoredCount = 0
-        foreach ($modFile in $savedMods) {
-            $source = Join-Path $customModTempDir $modFile
-            if (Test-Path -LiteralPath $source) {
-                Copy-Item -LiteralPath $source -Destination (Join-Path $modsDir $modFile) -Force
-                $restoredCount++
+
+        # ── Step 5: Restore custom mods ───────────────────────────────────────
+        Write-Step "Restoring custom mods..."
+
+        if ($savedMods.Count -gt 0 -and (Test-Path -LiteralPath $customModTempDir)) {
+            $modsDir = Join-Path $instancePath 'mods'
+            if (-not (Test-Path -LiteralPath $modsDir)) {
+                New-Item -Path $modsDir -ItemType Directory -Force | Out-Null
             }
+            $restoredCount = 0
+            foreach ($modFile in $savedMods) {
+                $source = Join-Path $customModTempDir $modFile
+                if (Test-Path -LiteralPath $source) {
+                    # Remove any jar with the same base name the nightly JAR may have placed
+                    # (e.g. it updated Angelica-beta66 -> Angelica-beta67; we're restoring beta66)
+                    $customBase = Get-ModBaseName -FileName $modFile
+                    Get-ChildItem -LiteralPath $modsDir -Filter '*.jar' -File -ErrorAction SilentlyContinue |
+                        Where-Object { (Get-ModBaseName -FileName $_.Name) -eq $customBase -and $_.Name -ne $modFile } |
+                        ForEach-Object {
+                            Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue
+                            Write-Log "[NIGHTLY] Removed updated pack version '$($_.Name)' — restoring custom '$modFile'"
+                        }
+                    Copy-Item -LiteralPath $source -Destination (Join-Path $modsDir $modFile) -Force
+                    $restoredCount++
+                }
+            }
+            Write-Success "Restored $restoredCount custom mod(s)."
+        } else {
+            Write-Info "No custom mods to restore."
         }
-        Write-Success "Restored $restoredCount custom mod(s)."
-    } else {
-        Write-Info "No custom mods to restore."
+
+        # ── Step 6: Apply config patches ──────────────────────────────────────
+        Write-Step "Applying config patches..."
+        Invoke-ConfigPatches -Config $Config -InstancePath $instancePath -Target $Target
+
+        # ── Step 7: Run verification ───────────────────────────────────────────
+        Write-Step "Running verification..."
+        Invoke-Verification -InstancePath $instancePath -Target $Target
+
+        # ── Step 8: Record history ─────────────────────────────────────────────
+        Write-Step "Recording update..."
+
+        $versionLabel = if ($script:CachedLatestNightly) {
+            $script:CachedLatestNightly
+        } else {
+            "$Channel-$(Get-Date -Format 'yyyyMMdd')"
+        }
+
+        Add-UpdateHistoryEntry -Config $Config -Version $versionLabel -Channel $Channel -Target $Target
+
+        $currentInstalled = $Target -eq 'server' ? $Config.InstalledServerVersion : $Config.InstalledClientVersion
+        $isAlreadyNightly = $currentInstalled -match 'nightly|daily|experimental|\d{8}'
+        if ($script:CachedLatestNightly -or $isAlreadyNightly -or [string]::IsNullOrEmpty($currentInstalled)) {
+            if ($Target -eq 'server') { $Config.InstalledServerVersion = $versionLabel }
+            else { $Config.InstalledClientVersion = $versionLabel }
+            Save-Config -Config $Config
+        }
+
+        Write-Host ""
+        Write-Success "$Channel update complete! $Target updated."
     }
-
-    # ── Step 6: Apply config patches ──────────────────────────────────────────
-    Write-Step "Applying config patches..."
-
-    Invoke-ConfigPatches -Config $Config -InstancePath $instancePath -Target $Target
-
-    # ── Step 7: Run verification ──────────────────────────────────────────────
-    Write-Step "Running verification..."
-
-    Invoke-Verification -InstancePath $instancePath -Target $Target
-
-    # ── Step 8: Record history ────────────────────────────────────────────────
-    Write-Step "Recording update..."
-
-    # Use cached nightly tag if available, otherwise fall back to date stamp
-    $versionLabel = if ($script:CachedLatestNightly) {
-        $script:CachedLatestNightly
-    } else {
-        "$Channel-$(Get-Date -Format 'yyyyMMdd')"
+    finally {
+        # Always clean up temp dirs, even if a post-success step throws
+        Remove-TempDir $customModTempDir
+        Remove-TempDir $preserveTempDir
+        Remove-TempDir $nightlyRollbackDir
     }
-
-    Add-UpdateHistoryEntry -Config $Config -Version $versionLabel -Channel $Channel -Target $Target
-
-    # Only overwrite installed version if we have a real nightly tag, or the current
-    # value is already a nightly stamp - avoids clobbering a real pack version with a date
-    $currentInstalled = $Target -eq 'server' ? $Config.InstalledServerVersion : $Config.InstalledClientVersion
-    $isAlreadyNightly = $currentInstalled -match 'nightly|daily|experimental|\d{8}'
-    if ($script:CachedLatestNightly -or $isAlreadyNightly -or [string]::IsNullOrEmpty($currentInstalled)) {
-        if ($Target -eq 'server') { $Config.InstalledServerVersion = $versionLabel }
-        else { $Config.InstalledClientVersion = $versionLabel }
-        Save-Config -Config $Config
-    }
-
-    # Clean up
-    if ($customModTempDir -and (Test-Path -LiteralPath $customModTempDir)) {
-        try { Remove-Item -LiteralPath $customModTempDir -Recurse -Force } catch {}
-    }
-    if ($preserveTempDir -and (Test-Path -LiteralPath $preserveTempDir)) {
-        try { Remove-Item -LiteralPath $preserveTempDir -Recurse -Force } catch {}
-    }
-    if ($nightlyRollbackDir -and (Test-Path -LiteralPath $nightlyRollbackDir)) {
-        try { Remove-Item -LiteralPath $nightlyRollbackDir -Recurse -Force } catch {}
-    }
-
-    Write-Host ""
-    Write-Success "$Channel update complete! $Target updated."
 }
 
 function Invoke-NightlyUpdaterJar {

@@ -20,6 +20,7 @@
 #   Invoke-VersionPicker     - Show version picker from pre-fetched releases
 #                               (stable + beta/RC) for user selection
 #   Invoke-UpdateHistory     - Display update history from config
+#   Invoke-ProfileMenu       - Create/switch/rename/delete profiles
 #   Invoke-MainLoop          - Top-level loop: init logging -> load/validate
 #                               config -> setup wizard if needed -> menu loop ->
 #                               dispatch to sub-functions
@@ -101,17 +102,33 @@ function Show-MainMenu {
     Write-Host "  Channel:        " -NoNewline -ForegroundColor Gray
     Write-Host "$channel" -ForegroundColor $(if ($isStableChannel) { 'Cyan' } else { 'Magenta' })
 
+    # Profile indicator (only shown when not on the default profile)
+    $activeProfileName = if ($script:ConfigPath -match 'gtnh-updater-config-(.+)\.json$') { $Matches[1] } else { $null }
+    if ($activeProfileName) {
+        $profileDisplay = if ($Config.ProfileLabel) { "$activeProfileName  ($($Config.ProfileLabel))" } else { $activeProfileName }
+        Write-Host "  Profile:        " -NoNewline -ForegroundColor Gray
+        Write-Host "$profileDisplay" -ForegroundColor DarkYellow
+    }
+
     # Custom mods and patches summary (only show if any are configured)
     $serverModCount = ($Config.CustomServerMods ?? @()).Count
     $clientModCount = ($Config.CustomClientMods ?? @()).Count
+    $overrideServerCount = ($Config.OverrideServerMods ?? @()).Count
+    $overrideClientCount = ($Config.OverrideClientMods ?? @()).Count
     $patchCount = ($Config.ConfigPatches ?? @()).Count
-    if ($serverModCount -gt 0 -or $clientModCount -gt 0 -or $patchCount -gt 0) {
+    if ($serverModCount -gt 0 -or $clientModCount -gt 0 -or $overrideServerCount -gt 0 -or $overrideClientCount -gt 0 -or $patchCount -gt 0) {
         $summaryParts = @()
         if ($serverModCount -gt 0 -or $clientModCount -gt 0) {
             $modParts = @()
             if ($serverModCount -gt 0) { $modParts += "$serverModCount server" }
             if ($clientModCount -gt 0) { $modParts += "$clientModCount client" }
             $summaryParts += "Mods: $($modParts -join ', ')"
+        }
+        if ($overrideServerCount -gt 0 -or $overrideClientCount -gt 0) {
+            $ovParts = @()
+            if ($overrideServerCount -gt 0) { $ovParts += "$overrideServerCount server" }
+            if ($overrideClientCount -gt 0) { $ovParts += "$overrideClientCount client" }
+            $summaryParts += "Overrides: $($ovParts -join ', ')"
         }
         if ($patchCount -gt 0) {
             $summaryParts += "Patches: $patchCount"
@@ -195,38 +212,28 @@ function Invoke-TargetSelection {
     }
 
     # Both configured - ask user
-    Write-Header "Select Update Target"
-    Write-Host ""
+    while ($true) {
+        Write-Header "Select Update Target"
+        Write-Host ""
 
-    Write-MenuOption "1" "Server only"
-    Write-MenuOption "2" "Client only"
-    Write-MenuOption "3" "Both server and client"
-    Write-MenuOption "R" "Return to main menu"
+        Write-MenuOption "1" "Server only"
+        Write-MenuOption "2" "Client only"
+        Write-MenuOption "3" "Both server and client"
+        Write-MenuOption "R" "Return to main menu"
 
-    $choice = Read-MenuChoice "Select target"
+        $choice = Read-MenuChoice "Select target"
 
-    switch ($choice) {
-        '1' {
-            $result.Server = $true
-        }
-        '2' {
-            $result.Client = $true
-        }
-        '3' {
-            $result.Server = $true
-            $result.Client = $true
-        }
-        { $_ -eq 'R' -or $_ -eq 'r' } {
-            return $result
-        }
-        default {
-            Write-Err "Invalid selection."
-            Wait-ForKey
-            return $result
+        switch ($choice) {
+            '1' { $result.Server = $true; return $result }
+            '2' { $result.Client = $true; return $result }
+            '3' { $result.Server = $true; $result.Client = $true; return $result }
+            { $_ -eq 'R' -or $_ -eq 'r' } { return $result }
+            default {
+                Write-Err "Invalid selection. Enter 1, 2, 3, or R."
+                Start-Sleep -Milliseconds 1000
+            }
         }
     }
-
-    return $result
 }
 
 function Invoke-SettingsMenu {
@@ -251,6 +258,7 @@ function Invoke-SettingsMenu {
         Write-MenuOption "6" "Re-run setup wizard"
         Write-MenuOption "E" "Export config"
         Write-MenuOption "I" "Import config"
+        Write-MenuOption "P" "Profiles"
         Write-Host ""
         Write-MenuOption "R" "Return to main menu"
 
@@ -305,6 +313,9 @@ function Invoke-SettingsMenu {
                     Write-Warn "File not found."
                 }
                 Wait-ForKey
+            }
+            { $_ -eq 'P' -or $_ -eq 'p' } {
+                $Config = Invoke-ProfileMenu -Config $Config
             }
             { $_ -eq 'R' -or $_ -eq 'r' } {
                 return
@@ -454,7 +465,7 @@ function Invoke-UpdatePreferencesMenu {
 
         Write-Host "  Channel:        " -NoNewline -ForegroundColor Gray
         Write-Host "$channel" -ForegroundColor Cyan
-        Write-Host "  Java version:   " -NoNewline -ForegroundColor Gray
+        Write-Host "  Pack type:      " -NoNewline -ForegroundColor Gray
         Write-Host "$javaVer" -ForegroundColor Cyan
         Write-Host "  Server version: " -NoNewline -ForegroundColor Gray
         Write-Host "$serverVer" -ForegroundColor Cyan
@@ -465,7 +476,7 @@ function Invoke-UpdatePreferencesMenu {
         Write-Host ""
 
         Write-MenuOption "1" "Default update channel"
-        Write-MenuOption "2" "Java version for downloads (17+ or 8)"
+        Write-MenuOption "2" "Server pack type (Java 17+ or Java 8 legacy)"
         Write-MenuOption "3" "Set installed GTNH version"
         Write-MenuOption "4" "Auto-update check on/off"
         Write-Host ""
@@ -632,24 +643,20 @@ function Invoke-CustomModsMenu {
         Write-MenuOption "1" "Server custom mods"
         Write-MenuOption "2" "Client custom mods"
         Write-Host ""
+        Write-MenuOption "3" "Server override mods (pack mods replaced with newer versions)"
+        Write-MenuOption "4" "Client override mods (pack mods replaced with newer versions)"
+        Write-Host ""
         Write-MenuOption "R" "Return"
 
         $choice = Read-MenuChoice "Select option"
 
         switch ($choice) {
-            '1' {
-                Invoke-CustomModSettingsMenu -Config $Config -Target 'server'
-            }
-            '2' {
-                Invoke-CustomModSettingsMenu -Config $Config -Target 'client'
-            }
-            { $_ -eq 'R' -or $_ -eq 'r' } {
-                return
-            }
-            default {
-                Write-Err "Invalid selection. Please try again."
-                Wait-ForKey
-            }
+            '1' { Invoke-CustomModSettingsMenu -Config $Config -Target 'server' }
+            '2' { Invoke-CustomModSettingsMenu -Config $Config -Target 'client' }
+            '3' { Invoke-OverrideModsMenu -Config $Config -Target 'server' }
+            '4' { Invoke-OverrideModsMenu -Config $Config -Target 'client' }
+            { $_ -eq 'R' -or $_ -eq 'r' } { return }
+            default { Write-Err "Invalid selection. Please try again."; Wait-ForKey }
         }
     }
 }
@@ -803,6 +810,225 @@ function Invoke-ExportImportMenu {
     }
 }
 
+function Invoke-OverrideModsMenu {
+    param(
+        [Parameter(Mandatory)][PSCustomObject]$Config,
+        [Parameter(Mandatory)][ValidateSet('server', 'client')][string]$Target
+    )
+
+    $label = $Target -eq 'server' ? 'Server' : 'Client'
+    $instancePath = $Target -eq 'server' ? $Config.ServerPath : $Config.ClientInstancePath
+
+    while ($true) {
+        $overrideList = @($Target -eq 'server' ? ($Config.OverrideServerMods ?? @()) : ($Config.OverrideClientMods ?? @()))
+
+        Write-Header "Settings > $label Override Mods"
+        Write-Info "Pack mods you've replaced with a newer version."
+        Write-Info "During stable updates you'll be asked whether to keep your version or use the pack's."
+        Write-Info "Override mods are NOT preserved during daily/experimental updates."
+        Write-Host ""
+
+        if ($overrideList.Count -gt 0) {
+            $tagWidth = "[$($overrideList.Count)]".Length
+            for ($i = 0; $i -lt $overrideList.Count; $i++) {
+                $tag = "[$($i + 1)]".PadLeft($tagWidth)
+                Write-Host "  $tag " -NoNewline -ForegroundColor White
+                Write-Host "$($overrideList[$i])" -ForegroundColor Magenta
+            }
+        } else {
+            Write-Info "No override mods configured."
+        }
+
+        Write-Host ""
+        Write-MenuOption "S" "Scan (auto-detect pack mods you've replaced with newer versions)"
+        Write-MenuOption "B" "Browse mods/ folder and pick"
+        Write-MenuOption "A" "Add manually (type filename)"
+        if ($overrideList.Count -gt 0) {
+            Write-MenuOption "D" "Remove an override mod"
+            Write-MenuOption "C" "Clear all override mods"
+        }
+        Write-MenuOption "R" "Return"
+
+        $choice = Read-MenuChoice "Select option"
+
+        switch ($choice.ToUpper()) {
+            'S' {
+                # Scan: find mods in your instance that are also in the pack but with a different version
+                $installedVer = $Target -eq 'server' ? $Config.InstalledServerVersion : $Config.InstalledClientVersion
+                if ([string]::IsNullOrWhiteSpace($installedVer) -or $installedVer -eq 'unknown') {
+                    Write-Warn "No installed version set. Configure it in Settings > Update Preferences first."
+                    Wait-ForKey; continue
+                }
+                if ([string]::IsNullOrEmpty($instancePath) -or -not (Test-Path -LiteralPath $instancePath)) {
+                    Write-Warn "No valid $($label.ToLower()) path configured."; Wait-ForKey; continue
+                }
+                $modsDir = Join-Path $instancePath 'mods'
+                if (-not (Test-Path -LiteralPath $modsDir)) {
+                    Write-Warn "No mods/ folder found."; Wait-ForKey; continue
+                }
+
+                $allReleases = $script:CachedWebsiteReleases ?? (Get-WebsiteReleases -PackType ($Config.JavaVersion ?? 'java17'))
+                $matchingRelease = $allReleases | Where-Object { $_.Version -eq $installedVer } | Select-Object -First 1
+                if (-not $matchingRelease) {
+                    Write-Warn "Could not find release v${installedVer} in version list."; Wait-ForKey; continue
+                }
+
+                $zipUrl  = $Target -eq 'server' ? $matchingRelease.ServerZipUrl  : $matchingRelease.ClientZipUrl
+                $zipName = $Target -eq 'server' ? $matchingRelease.ServerZipName : $matchingRelease.ClientZipName
+                $cachedZip = Get-CachedFile -FileName $zipName
+                $zipPath = Join-Path $script:TempDir $zipName
+
+                if ($cachedZip) {
+                    try { Copy-Item -LiteralPath $cachedZip -Destination $zipPath -Force } catch { Write-Err "Cache copy failed."; Wait-ForKey; continue }
+                } else {
+                    Write-Info "Downloading v${installedVer} pack to compare..."
+                    if (-not (Invoke-FileDownload -Url $zipUrl -OutPath $zipPath -Description "v${installedVer} $label pack")) {
+                        Write-Err "Download failed."; Wait-ForKey; continue
+                    }
+                }
+
+                # Read pack mod filenames from zip
+                Write-Step "Scanning for overridden mods..."
+                try {
+                    Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+                    $zip = [System.IO.Compression.ZipFile]::OpenRead($zipPath)
+                    $packModFiles = @{}
+                    foreach ($entry in $zip.Entries) {
+                        if ($entry.FullName -match '(?:^|/)mods/([^/]+\.jar)$') {
+                            $packModFiles[(Get-ModBaseName -FileName $Matches[1])] = $Matches[1]
+                        }
+                    }
+                    $zip.Dispose()
+                } catch {
+                    Write-Err "Could not read zip: $($_.Exception.Message)"; Wait-ForKey; continue
+                }
+
+                # Find local mods whose base name is in the pack but filename differs
+                $localJars = @(Get-ChildItem -LiteralPath $modsDir -Filter '*.jar' -File)
+                $customList = @($Target -eq 'server' ? ($Config.CustomServerMods ?? @()) : ($Config.CustomClientMods ?? @()))
+                $candidates = @()
+                foreach ($jar in $localJars) {
+                    $base = Get-ModBaseName -FileName $jar.Name
+                    if ($packModFiles.ContainsKey($base) -and $packModFiles[$base] -ne $jar.Name -and $jar.Name -notin $overrideList -and $jar.Name -notin $customList) {
+                        $candidates += [PSCustomObject]@{ Yours = $jar.Name; Pack = $packModFiles[$base] }
+                    }
+                }
+
+                if ($candidates.Count -eq 0) {
+                    Write-Success "No overridden pack mods detected."
+                    Wait-ForKey; continue
+                }
+
+                Write-Host ""
+                Write-Info "Found $($candidates.Count) mod(s) where your version differs from the pack:"
+                Write-Host ""
+                $tagWidth = "[$($candidates.Count)]".Length
+                for ($i = 0; $i -lt $candidates.Count; $i++) {
+                    $tag = "[$($i + 1)]".PadLeft($tagWidth)
+                    Write-Host "  $tag " -NoNewline -ForegroundColor White
+                    Write-Host "$($candidates[$i].Yours)" -NoNewline -ForegroundColor Magenta
+                    Write-Host "  (pack: $($candidates[$i].Pack))" -ForegroundColor DarkGray
+                }
+                Write-Host ""
+                $scanInput = (Read-UserInput "Mark as overrides (numbers, 'a' for all, Enter to skip)").Trim()
+                if ($scanInput) {
+                    $toAdd = @()
+                    if ($scanInput -eq 'a' -or $scanInput -eq 'A') {
+                        $toAdd = $candidates | ForEach-Object { $_.Yours }
+                    } else {
+                        foreach ($part in ($scanInput -split ',')) {
+                            $idx = 0
+                            if ([int]::TryParse($part.Trim(), [ref]$idx) -and $idx -ge 1 -and $idx -le $candidates.Count) {
+                                $toAdd += $candidates[$idx - 1].Yours
+                            }
+                        }
+                    }
+                    if ($toAdd.Count -gt 0) {
+                        if ($Target -eq 'server') { $Config.OverrideServerMods = @($Config.OverrideServerMods) + $toAdd }
+                        else { $Config.OverrideClientMods = @($Config.OverrideClientMods) + $toAdd }
+                        Save-Config -Config $Config
+                        Write-Success "Added $($toAdd.Count) override mod(s)."
+                    }
+                }
+                Wait-ForKey
+            }
+            'B' {
+                if ([string]::IsNullOrEmpty($instancePath) -or -not (Test-Path -LiteralPath $instancePath)) {
+                    Write-Warn "No valid $($label.ToLower()) path configured."; Wait-ForKey; continue
+                }
+                $modsDir = Join-Path $instancePath 'mods'
+                if (-not (Test-Path -LiteralPath $modsDir)) {
+                    Write-Warn "No mods/ folder found."; Wait-ForKey; continue
+                }
+                $allJars = @(Get-ChildItem -LiteralPath $modsDir -Filter '*.jar' -File | Sort-Object Name | ForEach-Object { $_.Name })
+                $available = @($allJars | Where-Object { $_ -notin $overrideList })
+                if ($available.Count -eq 0) { Write-Info "All mods already tracked."; Wait-ForKey; continue }
+
+                $tagWidth = "[$($available.Count)]".Length
+                for ($i = 0; $i -lt $available.Count; $i++) {
+                    $tag = "[$($i + 1)]".PadLeft($tagWidth)
+                    Write-Host "  $tag $($available[$i])" -ForegroundColor Cyan
+                }
+                Write-Host ""
+                $picks = (Read-UserInput "Enter numbers (comma-separated) or Enter to cancel").Trim()
+                if ($picks) {
+                    $toAdd = @()
+                    foreach ($part in ($picks -split ',')) {
+                        $idx = 0
+                        if ([int]::TryParse($part.Trim(), [ref]$idx) -and $idx -ge 1 -and $idx -le $available.Count) {
+                            $toAdd += $available[$idx - 1]
+                        }
+                    }
+                    if ($toAdd.Count -gt 0) {
+                        if ($Target -eq 'server') { $Config.OverrideServerMods = @($Config.OverrideServerMods) + $toAdd }
+                        else { $Config.OverrideClientMods = @($Config.OverrideClientMods) + $toAdd }
+                        Save-Config -Config $Config
+                        Write-Success "Added $($toAdd.Count) override mod(s)."
+                    }
+                }
+                Wait-ForKey
+            }
+            'A' {
+                $input = Read-UserInput "Mod filename (e.g. angelica-1.0.0-beta66b.jar)"
+                if ($input -and $input -match '\.jar$') {
+                    if ($Target -eq 'server') { $Config.OverrideServerMods = @($Config.OverrideServerMods) + $input }
+                    else { $Config.OverrideClientMods = @($Config.OverrideClientMods) + $input }
+                    Save-Config -Config $Config
+                    Write-Success "Added: $input"
+                } elseif ($input) {
+                    Write-Warn "Must be a .jar filename."
+                }
+                Wait-ForKey
+            }
+            'D' {
+                if ($overrideList.Count -eq 0) { Wait-ForKey; continue }
+                $pick = Read-UserInput "Enter number to remove"
+                $idx = 0
+                if ([int]::TryParse($pick, [ref]$idx) -and $idx -ge 1 -and $idx -le $overrideList.Count) {
+                    $removed = $overrideList[$idx - 1]
+                    $newList = @($overrideList | Where-Object { $_ -ne $removed })
+                    if ($Target -eq 'server') { $Config.OverrideServerMods = $newList }
+                    else { $Config.OverrideClientMods = $newList }
+                    Save-Config -Config $Config
+                    Write-Success "Removed: $removed"
+                }
+                Wait-ForKey
+            }
+            'C' {
+                if (Confirm-Action "Clear all $($label.ToLower()) override mods?") {
+                    if ($Target -eq 'server') { $Config.OverrideServerMods = @() }
+                    else { $Config.OverrideClientMods = @() }
+                    Save-Config -Config $Config
+                    Write-Success "Override mods cleared."
+                }
+                Wait-ForKey
+            }
+            'R' { return }
+            default { Write-Warn "Invalid option."; Wait-ForKey }
+        }
+    }
+}
+
 function Invoke-CustomModSettingsMenu {
     <#
     .SYNOPSIS
@@ -822,6 +1048,7 @@ function Invoke-CustomModSettingsMenu {
 
     while ($true) {
         $modList = $Target -eq 'server' ? $Config.CustomServerMods : $Config.CustomClientMods
+        $overrideList = $Target -eq 'server' ? ($Config.OverrideServerMods ?? @()) : ($Config.OverrideClientMods ?? @())
 
         Write-Header "Settings > Custom $label Mods"
 
@@ -833,6 +1060,15 @@ function Invoke-CustomModSettingsMenu {
         }
         else {
             Write-Info "No custom mods configured."
+        }
+
+        if ($overrideList.Count -gt 0) {
+            Write-Host ""
+            Write-Host "  Override mods (pack mods you've replaced with newer versions):" -ForegroundColor DarkGray
+            foreach ($mod in $overrideList) {
+                Write-Host "  ~ " -NoNewline -ForegroundColor DarkGray
+                Write-Host "$mod" -ForegroundColor Magenta
+            }
         }
 
         Write-Host ""
@@ -1679,19 +1915,22 @@ function Invoke-ScriptUpdateCheck {
 
     # Ensure the installed version matches the release tag
     # (safety net in case the developer forgot to bump the version before releasing)
-    $mainScript = Join-Path $scriptDir 'Update-GTNH.ps1'
-    if (Test-Path -LiteralPath $mainScript) {
+    $versionScript = Join-Path $scriptDir 'lib\Version.ps1'
+    if (-not (Test-Path -LiteralPath $versionScript)) {
+        $versionScript = Join-Path $scriptDir 'lib/Version.ps1'
+    }
+    if (Test-Path -LiteralPath $versionScript) {
         try {
-            $mainContent = Get-Content -LiteralPath $mainScript -Raw -Encoding UTF8
+            $verContent = Get-Content -LiteralPath $versionScript -Raw -Encoding UTF8
             $newVersion = $updateInfo.Version -replace '^v', ''
-            $patched = $mainContent -replace "(\`$script:UpdaterVersion\s*=\s*')[^']*(')", "`${1}$newVersion`${2}"
-            if ($patched -ne $mainContent) {
-                Set-Content -LiteralPath $mainScript -Value $patched -Encoding UTF8 -NoNewline
+            $patched = $verContent -replace "(\`$script:UpdaterVersion\s*=\s*')[^']*(')", "`${1}$newVersion`${2}"
+            if ($patched -ne $verContent) {
+                Set-Content -LiteralPath $versionScript -Value $patched -Encoding UTF8 -NoNewline
                 Write-Log "[SELF-UPDATE] Patched UpdaterVersion to $newVersion"
             }
         }
         catch {
-            Write-Log "[WARN] Could not patch version in Update-GTNH.ps1: $($_.Exception.Message)"
+            Write-Log "[WARN] Could not patch version in Version.ps1: $($_.Exception.Message)"
         }
     }
 
@@ -1839,7 +2078,7 @@ function Invoke-VersionPicker {
 
         $choice = Read-MenuChoice "Enter number or option"
 
-        if ($choice -eq '' -or $choice -eq $null) {
+        if ([string]::IsNullOrEmpty($choice)) {
             # Default: latest release
             return $releases[0]
         }
@@ -2001,6 +2240,15 @@ function Show-HelpScreen {
     Write-Host ""
 
     Write-Host "  " -NoNewline
+    Write-Host "Profiles" -ForegroundColor Cyan
+    Write-Host "  Profiles let you manage multiple independent instances (e.g. a" -ForegroundColor Gray
+    Write-Host "  stable server and a daily test server) with separate configs." -ForegroundColor Gray
+    Write-Host "  Create and switch profiles in Settings > Profiles." -ForegroundColor Gray
+    Write-Host "  If you have more than one profile, you'll be asked to pick one" -ForegroundColor Gray
+    Write-Host "  at startup." -ForegroundColor Gray
+    Write-Host ""
+
+    Write-Host "  " -NoNewline
     Write-Host "Tips" -ForegroundColor Cyan
     Write-Host "  * Use /text to search in any browse or version picker list." -ForegroundColor Gray
     Write-Host "  * Comma-separated numbers select multiple items (e.g. 1,3,5)." -ForegroundColor Gray
@@ -2065,6 +2313,131 @@ function Update-VersionCache {
     }
 
 }
+function Invoke-ProfileMenu {
+    <#
+    .SYNOPSIS
+        Manage profiles: create, switch, rename, delete.
+    .PARAMETER Config
+        The currently active config PSCustomObject (passed by ref via return value).
+    .OUTPUTS
+        The (possibly new) active config after any switch.
+    #>
+    param([Parameter(Mandatory)][PSCustomObject]$Config)
+
+    while ($true) {
+        $profiles = Get-ProfileList
+        $activeName = if ($script:ConfigPath -match 'gtnh-updater-config-(.+)\.json$') { $Matches[1] } else { 'default' }
+
+        Write-Header "Settings > Profiles"
+
+        for ($i = 0; $i -lt $profiles.Count; $i++) {
+            $p = $profiles[$i]
+            $display = if ($p.Label) { "$($p.Name)  ($($p.Label))" } else { $p.Name }
+            $active = $p.Name -eq $activeName ? ' *' : ''
+            Write-Host "  [$($i + 1)] " -NoNewline -ForegroundColor White
+            Write-Host "$display$active" -ForegroundColor $(if ($p.Name -eq $activeName) { 'Green' } else { 'Cyan' })
+        }
+
+        Write-Host ""
+        Write-MenuOption "N" "New profile"
+        if ($profiles.Count -gt 1) { Write-MenuOption "S" "Switch profile" }
+        Write-MenuOption "L" "Rename active profile label"
+        if ($profiles.Count -gt 1) { Write-MenuOption "D" "Delete a profile" }
+        Write-Host ""
+        Write-MenuOption "R" "Return"
+
+        $choice = Read-MenuChoice "Select option"
+
+        switch ($choice.ToUpper()) {
+            'N' {
+                $slug = (Read-UserInput "Profile name (letters, numbers, hyphens)").Trim().ToLower() -replace '[^a-z0-9-]', '-'
+                if (-not $slug) { Wait-ForKey; continue }
+                if ($slug -eq 'default') { Write-Warn "'default' is reserved."; Wait-ForKey; continue }
+                $newPath = Join-Path $script:ScriptDir "gtnh-updater-config-$slug.json"
+                if (Test-Path -LiteralPath $newPath) { Write-Warn "Profile '$slug' already exists."; Wait-ForKey; continue }
+
+                $label = (Read-UserInput "Friendly label (optional, e.g. 'Daily Test')").Trim()
+
+                Write-Host ""
+                Write-MenuOption "C" "Copy current profile as starting point"
+                Write-MenuOption "W" "Start fresh (setup wizard)"
+                $startChoice = Read-MenuChoice "Starting point"
+
+                if ($startChoice -eq 'C' -or $startChoice -eq 'c') {
+                    # Copy current config to new path, update label
+                    $newConfig = $Config | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+                    $newConfig.ProfileLabel = $label
+                    $script:ConfigPath = $newPath
+                    Save-Config -Config $newConfig
+                    $Config = Repair-Config -Config $newConfig
+                    Write-Success "Profile '$slug' created from current config. Now active."
+                } else {
+                    # Setup wizard for new profile
+                    $script:ConfigPath = $newPath
+                    $fresh = New-DefaultConfig
+                    $fresh.ProfileLabel = $label
+                    $Config = Invoke-InteractiveSetup -ExistingConfig $fresh
+                    if ($null -eq $Config) {
+                        # Wizard cancelled - revert
+                        $script:ConfigPath = if ($activeName -eq 'default') {
+                            Join-Path $script:ScriptDir 'gtnh-updater-config.json'
+                        } else {
+                            Join-Path $script:ScriptDir "gtnh-updater-config-$activeName.json"
+                        }
+                        $Config = Load-Config
+                        if ($null -ne $Config) { $Config = Repair-Config -Config $Config }
+                        Write-Warn "Profile creation cancelled."
+                    } else {
+                        Write-Success "Profile '$slug' created. Now active."
+                    }
+                }
+                Wait-ForKey
+            }
+            'S' {
+                if ($profiles.Count -le 1) { continue }
+                $pick = Read-UserInput "Switch to profile number"
+                $idx = 0
+                if ([int]::TryParse($pick, [ref]$idx) -and $idx -ge 1 -and $idx -le $profiles.Count) {
+                    $target = $profiles[$idx - 1]
+                    if ($target.Name -eq $activeName) { Write-Info "Already on '$($target.Name)'."; Wait-ForKey; continue }
+                    $switched = Switch-Profile -ProfileName $target.Name
+                    if ($null -ne $switched) {
+                        $Config = $switched
+                        Write-Success "Switched to profile '$($target.Name)'."
+                    } else {
+                        Write-Warn "Profile file not found. Run setup wizard to configure it."
+                        $Config = Invoke-InteractiveSetup -ExistingConfig (New-DefaultConfig)
+                    }
+                }
+                Wait-ForKey
+            }
+            'L' {
+                $newLabel = (Read-UserInput "New label for '$activeName'" -Default $Config.ProfileLabel).Trim()
+                $Config.ProfileLabel = $newLabel
+                Save-Config -Config $Config
+                Write-Success "Label updated."
+                Wait-ForKey
+            }
+            'D' {
+                if ($profiles.Count -le 1) { Write-Warn "Cannot delete the only profile."; Wait-ForKey; continue }
+                $pick = Read-UserInput "Delete profile number"
+                $idx = 0
+                if ([int]::TryParse($pick, [ref]$idx) -and $idx -ge 1 -and $idx -le $profiles.Count) {
+                    $target = $profiles[$idx - 1]
+                    if ($target.Name -eq $activeName) { Write-Warn "Cannot delete the active profile. Switch first."; Wait-ForKey; continue }
+                    if (Confirm-Action "Delete profile '$($target.Name)'? This cannot be undone.") {
+                        Remove-Item -LiteralPath $target.Path -Force
+                        Write-Success "Profile '$($target.Name)' deleted."
+                    }
+                }
+                Wait-ForKey
+            }
+            'R' { return $Config }
+            default { Write-Err "Invalid selection."; Wait-ForKey }
+        }
+    }
+}
+
 function Invoke-MainLoop {
     <#
     .SYNOPSIS
@@ -2104,6 +2477,32 @@ function Invoke-MainLoop {
                 Write-Info "Otherwise they will be cleaned up automatically."
                 Write-Host ""
                 Wait-ForKey
+            }
+        }
+
+        # Profile picker: show only when more than one profile exists
+        $allProfiles = Get-ProfileList
+        if ($allProfiles.Count -gt 1) {
+            Write-Host ""
+            Write-Host "  Select profile:" -ForegroundColor White
+            Write-Host ""
+            for ($pi = 0; $pi -lt $allProfiles.Count; $pi++) {
+                $p = $allProfiles[$pi]
+                $display = if ($p.Label) { "$($p.Name)  ($($p.Label))" } else { $p.Name }
+                Write-Host "  [$($pi + 1)] " -NoNewline -ForegroundColor White
+                Write-Host $display -ForegroundColor Cyan
+            }
+            Write-Host ""
+            $profileChoice = Read-UserInput "Profile [1]"
+            $pidx = 1
+            if ($profileChoice -and [int]::TryParse($profileChoice.Trim(), [ref]$pidx) -and $pidx -ge 1 -and $pidx -le $allProfiles.Count) {
+                $null = $null  # valid
+            } else {
+                $pidx = 1  # default to first (default profile)
+            }
+            $chosenProfile = $allProfiles[$pidx - 1]
+            if ($chosenProfile.Name -ne 'default') {
+                $script:ConfigPath = $chosenProfile.Path
             }
         }
 
@@ -2287,7 +2686,7 @@ function Invoke-MainLoop {
                             break
                         }
 
-                        # Quick update shortcut: if there's a clear newer stable version, offer it directly
+                        # Quick update shortcut: always show when we know the latest stable version
                         $selectedRelease = $null
                         $latestStableRelease = $allReleases | Where-Object { $_.Type -eq 'Stable' } | Select-Object -First 1
 
@@ -2299,25 +2698,28 @@ function Invoke-MainLoop {
                             $clientBehind = (-not [string]::IsNullOrEmpty($config.ClientInstancePath)) -and
                                             $config.InstalledClientVersion -and
                                             $config.InstalledClientVersion -ne $script:CachedLatestVersion
+                            $alreadyCurrent = -not $serverBehind -and -not $clientBehind
 
-                            if ($serverBehind -or $clientBehind) {
-                                Write-Host ""
-                                Write-Host "  Latest stable: " -NoNewline -ForegroundColor Gray
-                                Write-Host "$($script:CachedLatestVersion)" -ForegroundColor Green
-                                Write-Host ""
-                                Write-MenuOption "Y" "Update to $($script:CachedLatestVersion)"
-                                Write-MenuOption "P" "Pick a different version (beta, older, etc.)"
-                                Write-MenuOption "R" "Return to main menu"
+                            Write-Host ""
+                            Write-Host "  Latest stable: " -NoNewline -ForegroundColor Gray
+                            Write-Host "$($script:CachedLatestVersion)" -ForegroundColor $(if ($alreadyCurrent) { 'Green' } else { 'Green' })
+                            if ($alreadyCurrent) {
+                                Write-Host "  Already up to date." -ForegroundColor DarkGreen
+                            }
+                            Write-Host ""
+                            $quickLabel = if ($alreadyCurrent) { "Re-install $($script:CachedLatestVersion)" } else { "Update to $($script:CachedLatestVersion)" }
+                            Write-MenuOption "Y" $quickLabel
+                            Write-MenuOption "P" "Pick a different version (beta, older, etc.)"
+                            Write-MenuOption "R" "Return to main menu"
 
-                                $quickChoice = Read-MenuChoice "Choose"
+                            $quickChoice = Read-MenuChoice "Choose"
 
-                                if ($quickChoice -eq 'y' -or $quickChoice -eq 'Y') {
-                                    $selectedRelease = $latestStableRelease
-                                } elseif ($quickChoice -eq 'p' -or $quickChoice -eq 'P') {
-                                    $selectedRelease = Invoke-VersionPicker -Config $config -Releases $allReleases
-                                } else {
-                                    break
-                                }
+                            if ($quickChoice -eq 'y' -or $quickChoice -eq 'Y') {
+                                $selectedRelease = $latestStableRelease
+                            } elseif ($quickChoice -eq 'p' -or $quickChoice -eq 'P') {
+                                $selectedRelease = Invoke-VersionPicker -Config $config -Releases $allReleases
+                            } else {
+                                break
                             }
                         }
 

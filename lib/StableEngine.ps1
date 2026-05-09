@@ -16,6 +16,13 @@
 # file preservation, and post-update verification at every step.
 # ============================================================================
 
+function Remove-TempDir {
+    param([string]$Path)
+    if ($Path -and (Test-Path -LiteralPath $Path)) {
+        try { Remove-Item -LiteralPath $Path -Recurse -Force } catch {}
+    }
+}
+
 function Invoke-StableUpdate {
     <#
     .SYNOPSIS
@@ -60,6 +67,7 @@ function Invoke-StableUpdate {
 
     # Initialize cleanup variables upfront so finally blocks are safe
     $customModTempDir = $null
+    $overrideModTempDir = $null
     $preserveTempDir = $null
     $rollbackDir = $null
     $stagingDir = $null
@@ -229,6 +237,15 @@ function Invoke-StableUpdate {
         }
     }
 
+    # ── Backup warning: shown before any download starts ─────────────────────
+    Write-Host ""
+    Write-BackupWarning -Target $Target
+    Write-Host ""
+    if (-not (Confirm-Action "Instance is backed up and server is stopped. Continue?")) {
+        Write-Info "Update cancelled."
+        return
+    }
+
     # ── Step 3: Check cache / download zip ────────────────────────────────────
     Write-Step "Preparing download..."
 
@@ -247,6 +264,21 @@ function Invoke-StableUpdate {
     }
 
     $zipPath = Join-Path $tempDir $zipName
+
+    # Pre-flight disk space check (GTNH zips are typically 400-500 MB)
+    try {
+        $driveRoot = [System.IO.Path]::GetPathRoot($tempDir)
+        $freeSpaceGB = [math]::Round(([System.IO.DriveInfo]::new($driveRoot)).AvailableFreeSpace / 1GB, 2)
+        if ($freeSpaceGB -lt 1.5) {
+            Write-Warn "Low disk space: ${freeSpaceGB} GB free on $driveRoot (need ~1.5 GB for download + extraction)"
+            if (-not (Confirm-Action "Continue anyway?")) {
+                Write-Info "Update cancelled."
+                return
+            }
+        }
+    } catch {
+        Write-Log "[WARN] Could not check disk space: $($_.Exception.Message)"
+    }
 
     # Download (checks cache automatically)
     $downloaded = Invoke-FileDownload -Url $zipUrl -OutPath $zipPath -Description "$Target pack zip"
@@ -287,10 +319,13 @@ function Invoke-StableUpdate {
     if ($integrityResult -eq $false) {
         Write-Err "Downloaded file failed integrity check. It may be corrupted."
         Write-Info "Try clearing the cache (Settings > Backups and cache) and downloading again."
-        # Remove the bad file from cache too
+        # Remove the bad file from cache and temp
         $cachedBad = Join-Path $script:CacheDir $zipName
         if (Test-Path -LiteralPath $cachedBad) {
             try { Remove-Item -LiteralPath $cachedBad -Force } catch {}
+        }
+        if (Test-Path -LiteralPath $zipPath) {
+            try { Remove-Item -LiteralPath $zipPath -Force } catch {}
         }
         return
     }
@@ -317,16 +352,36 @@ function Invoke-StableUpdate {
             if (Test-Path -LiteralPath $stagingDir) {
                 Remove-Item -LiteralPath $stagingDir -Recurse -Force
             }
-            # Remove potentially corrupted file from cache
+            # Remove potentially corrupted file from cache and temp
             $cachedCorrupt = Join-Path $script:CacheDir $zipName
             if (Test-Path -LiteralPath $cachedCorrupt) {
-                try {
-                    Remove-Item -LiteralPath $cachedCorrupt -Force
-                    Write-Info "Removed cached file (may be corrupted): $zipName"
-                }
-                catch {}
+                try { Remove-Item -LiteralPath $cachedCorrupt -Force; Write-Info "Removed cached file (may be corrupted): $zipName" } catch {}
+            }
+            if (Test-Path -LiteralPath $zipPath) {
+                try { Remove-Item -LiteralPath $zipPath -Force } catch {}
             }
             return
+        }
+    }
+
+    # ── Config diff detection (if previous pack zip is cached) ────────────────
+    if ($installedVersion) {
+        $prevRelease = $script:CachedWebsiteReleases | Where-Object { $_.Version -eq $installedVersion } | Select-Object -First 1
+        $prevZipName = $null
+        if ($prevRelease) {
+            $prevZipName = $Target -eq 'server' ? $prevRelease.ServerZipName : $prevRelease.ClientZipName
+        }
+        $prevZipCached = $prevZipName ? (Get-CachedFile -FileName $prevZipName) : $null
+
+        if ($prevZipCached) {
+            Invoke-ConfigDiffDetection `
+                -BaselineZipPath $prevZipCached `
+                -InstancePath    $instancePath `
+                -StagingZipPath  $zipPath `
+                -Config          $Config `
+                -Target          $Target | Out-Null
+        } else {
+            Write-Info "Previous pack zip not cached — config change detection skipped."
         }
     }
 
@@ -391,18 +446,35 @@ function Invoke-StableUpdate {
         $customBaseNames[(Get-ModBaseName -FileName $mod)] = $true
     }
 
+    # Get override mods list from config
+    $savedOverrideMods = $Target -eq 'server' ? ($Config.OverrideServerMods ?? @()) : ($Config.OverrideClientMods ?? @())
+    $overrideBaseNames = @{}
+    foreach ($mod in $savedOverrideMods) {
+        $overrideBaseNames[(Get-ModBaseName -FileName $mod)] = $mod
+    }
+
     # Categorize mods
     $added = @()
     $removed = @()
     $updated = @()
     $custom = @()
+    $overrideConflicts = @()  # override mods where pack also has a version
 
     foreach ($base in $newBaseMap.Keys) {
         if (-not $currentBaseMap.ContainsKey($base)) {
             $added += $newBaseMap[$base]
         }
         elseif ($currentBaseMap[$base] -ne $newBaseMap[$base]) {
-            $updated += [PSCustomObject]@{ Old = $currentBaseMap[$base]; New = $newBaseMap[$base] }
+            if ($overrideBaseNames.ContainsKey($base)) {
+                # Override mod — pack has a different version, needs user decision
+                $overrideConflicts += [PSCustomObject]@{
+                    YourVersion = $overrideBaseNames[$base]
+                    PackVersion = $newBaseMap[$base]
+                    Base        = $base
+                }
+            } else {
+                $updated += [PSCustomObject]@{ Old = $currentBaseMap[$base]; New = $newBaseMap[$base] }
+            }
         }
     }
 
@@ -457,7 +529,10 @@ function Invoke-StableUpdate {
 
         # ── Step 7: Interactive custom mod marking ────────────────────────────
         Write-Host ""
-        Write-Host "  Any of these your custom mods? They'll be preserved during updates." -ForegroundColor White
+        Write-Host "  $('-' * 56)" -ForegroundColor DarkGray
+        Write-Host "  Any of these your custom mods?" -ForegroundColor White
+        Write-Host "  Custom mods are preserved during updates." -ForegroundColor Gray
+        Write-Host "  $('-' * 56)" -ForegroundColor DarkGray
         $markInput = (Read-UserInput "Mark custom mods (numbers separated by commas, 'a' for all, or Enter to skip)").Trim()
 
         if ($markInput) {
@@ -538,7 +613,30 @@ function Invoke-StableUpdate {
         & $showList ($custom | Sort-Object) '*' 'Cyan'
     }
 
-    if ($added.Count -eq 0 -and $removed.Count -eq 0 -and $updated.Count -eq 0 -and $custom.Count -eq 0) {
+    # ── Override mod conflicts ────────────────────────────────────────────────
+    $keepOverrides = $false
+    if ($overrideConflicts.Count -gt 0) {
+        Write-Host ""
+        Write-Host "  Override mods — pack has a different version ($($overrideConflicts.Count)):" -ForegroundColor Magenta
+        foreach ($oc in $overrideConflicts) {
+            Write-Host "    ~ Your version: " -NoNewline -ForegroundColor DarkGray
+            Write-Host "$($oc.YourVersion)" -NoNewline -ForegroundColor Magenta
+            Write-Host "  |  Pack version: " -NoNewline -ForegroundColor DarkGray
+            Write-Host "$($oc.PackVersion)" -ForegroundColor Yellow
+        }
+        Write-Host ""
+        Write-Host "  Keep your versions? " -NoNewline -ForegroundColor White
+        Write-Host "[Y] Keep mine  [N] Use pack versions" -ForegroundColor DarkGray
+        $overrideChoice = (Read-Host).Trim()
+        $keepOverrides = $overrideChoice -notmatch '^[Nn]$'
+        if ($keepOverrides) {
+            Write-Info "  Your override versions will be restored after update."
+        } else {
+            Write-Info "  Pack versions will be used."
+        }
+    }
+
+    if ($added.Count -eq 0 -and $removed.Count -eq 0 -and $updated.Count -eq 0 -and $custom.Count -eq 0 -and $overrideConflicts.Count -eq 0) {
         Write-Host ""
         Write-Info "No mod differences detected."
     }
@@ -546,7 +644,7 @@ function Invoke-StableUpdate {
     Write-Host ""
     $diff = $newJars.Count - $currentJars.Count
     $diffLabel = $diff -gt 0 ? "+$diff" : "$diff"
-    Write-Info "Summary: $($added.Count) added, $($removed.Count) removed, $($updated.Count) updated, $($custom.Count) custom  (net: $diffLabel)"
+    Write-Info "Summary: $($added.Count) added, $($removed.Count) removed, $($updated.Count) updated, $($custom.Count) custom$(if ($overrideConflicts.Count -gt 0) { ", $($overrideConflicts.Count) override" })  (net: $diffLabel)"
 
     # Offer search if there are many mods
     $totalChanges = $added.Count + $removed.Count + $updated.Count + $custom.Count
@@ -589,6 +687,55 @@ function Invoke-StableUpdate {
         }
     }
 
+    # ── Stale custom mod check ────────────────────────────────────────────────
+    # Re-check here so the user can fix issues before committing to the update.
+    if ($savedCustomMods.Count -gt 0 -and (Test-Path -LiteralPath $currentModsPath)) {
+        $localBaseNames = @{}
+        foreach ($jar in (Get-ChildItem -LiteralPath $currentModsPath -Filter '*.jar' -File)) {
+            $localBaseNames[(Get-ModBaseName -FileName $jar.Name)] = $jar.Name
+        }
+        $staleEntries = @()
+        foreach ($tracked in $savedCustomMods) {
+            $base = Get-ModBaseName -FileName $tracked
+            if (-not $localBaseNames.ContainsKey($base)) {
+                $staleEntries += $tracked
+            } elseif ($tracked -ne $localBaseNames[$base]) {
+                $staleEntries += $tracked  # filename changed (version bump)
+            }
+        }
+        if ($staleEntries.Count -gt 0) {
+            Write-Host ""
+            Write-Host "  $('-' * 56)" -ForegroundColor DarkGray
+            Write-Warn "$($staleEntries.Count) custom mod(s) have stale entries (missing or renamed):"
+            foreach ($s in $staleEntries) { Write-Host "    - $s" -ForegroundColor DarkYellow }
+            Write-Host "  These will NOT be preserved unless fixed." -ForegroundColor DarkYellow
+            Write-Host "  $('-' * 56)" -ForegroundColor DarkGray
+            Write-Host ""
+            Write-MenuOption "F" "Auto-fix now (update filenames / remove missing)"
+            Write-MenuOption "K" "Continue anyway"
+            $staleChoice = Read-MenuChoice "Choose"
+            if ($staleChoice -eq 'F' -or $staleChoice -eq 'f') {
+                $newList = @($savedCustomMods)
+                foreach ($s in $staleEntries) {
+                    $base = Get-ModBaseName -FileName $s
+                    if ($localBaseNames.ContainsKey($base) -and $localBaseNames[$base] -ne $s) {
+                        # Rename to current filename
+                        $newList = @($newList | ForEach-Object { if ($_ -eq $s) { $localBaseNames[$base] } else { $_ } })
+                        Write-Info "  Updated: $s -> $($localBaseNames[$base])"
+                    } else {
+                        # Remove missing entry
+                        $newList = @($newList | Where-Object { $_ -ne $s })
+                        Write-Info "  Removed: $s"
+                    }
+                }
+                $savedCustomMods = $newList
+                if ($Target -eq 'server') { $Config.CustomServerMods = $newList } else { $Config.CustomClientMods = $newList }
+                Save-Config -Config $Config
+                Write-Success "Custom mods list updated."
+            }
+        }
+    }
+
     # ── Step 8: Show deletion summary with folder list ────────────────────────
     $foldersToDelete = $Target -eq 'server' ? $script:ServerFoldersToDelete : $script:ClientFoldersToDelete
     $javaVersion = $Config.JavaVersion ?? 'java17'
@@ -628,22 +775,6 @@ function Invoke-StableUpdate {
 
         switch ($choice.ToUpper()) {
             'A' {
-                # Show backup warning before applying
-                Write-Host ""
-                if ($Target -eq 'server') {
-                    Write-Host "  ╔══════════════════════════════════════════════════════════════╗" -ForegroundColor Red
-                    Write-Host "  ║  Back up your server and make sure it is STOPPED.           ║" -ForegroundColor Red
-                    Write-Host "  ╚══════════════════════════════════════════════════════════════╝" -ForegroundColor Red
-                } else {
-                    Write-Host "  ╔══════════════════════════════════════════════════════════════╗" -ForegroundColor DarkYellow
-                    Write-Host "  ║  Back up your client instance before continuing.            ║" -ForegroundColor DarkYellow
-                    Write-Host "  ╚══════════════════════════════════════════════════════════════╝" -ForegroundColor DarkYellow
-                }
-                Write-Host ""
-                if (-not (Confirm-Action "Ready to apply? Instance is backed up and server is stopped?")) {
-                    Write-Info "Waiting. Choose again when ready."
-                    continue
-                }
                 $applyUpdate = $true
                 break
             }
@@ -653,6 +784,10 @@ function Invoke-StableUpdate {
             }
             'C' {
                 Write-Info "Update cancelled. Staging folder preserved at: $stagingDir"
+                # Clean up the temp zip (already cached; no need to keep the temp copy)
+                if ($zipPath -and (Test-Path -LiteralPath $zipPath)) {
+                    try { Remove-Item -LiteralPath $zipPath -Force } catch {}
+                }
                 return
             }
             default {
@@ -674,6 +809,21 @@ function Invoke-StableUpdate {
     $customModTempDir = Join-Path $tempDir 'custom-mods'
     if (Test-Path -LiteralPath $customModTempDir) {
         Remove-Item -LiteralPath $customModTempDir -Recurse -Force
+    }
+
+    # Also back up override mods to temp (they'll be deleted with mods/ folder)
+    $overrideModTempDir = Join-Path $tempDir 'override-mods'
+    if (Test-Path -LiteralPath $overrideModTempDir) {
+        Remove-Item -LiteralPath $overrideModTempDir -Recurse -Force
+    }
+    if ($keepOverrides -and $overrideConflicts.Count -gt 0 -and (Test-Path -LiteralPath $currentModsPath)) {
+        New-Item -Path $overrideModTempDir -ItemType Directory -Force | Out-Null
+        foreach ($oc in $overrideConflicts) {
+            $src = Join-Path $currentModsPath $oc.YourVersion
+            if (Test-Path -LiteralPath $src) {
+                Copy-Item -LiteralPath $src -Destination (Join-Path $overrideModTempDir $oc.YourVersion) -Force
+            }
+        }
     }
 
     if ($customModsToRestore.Count -gt 0 -and (Test-Path -LiteralPath $currentModsPath)) {
@@ -787,12 +937,8 @@ function Invoke-StableUpdate {
         Write-Warn "Some files could not be preserved. They may be lost during the update."
         if (-not (Confirm-Action "Continue anyway?")) {
             Write-Info "Update cancelled."
-            if ($customModTempDir -and (Test-Path -LiteralPath $customModTempDir)) {
-                try { Remove-Item -LiteralPath $customModTempDir -Recurse -Force } catch {}
-            }
-            if ($preserveTempDir -and (Test-Path -LiteralPath $preserveTempDir)) {
-                try { Remove-Item -LiteralPath $preserveTempDir -Recurse -Force } catch {}
-            }
+            Remove-TempDir $customModTempDir
+            Remove-TempDir $preserveTempDir
             return
         }
     }
@@ -802,12 +948,8 @@ function Invoke-StableUpdate {
         Write-Err "Backup failed. Update cancelled for safety."
         Write-Info "Fix the backup issue or disable backups in Settings, then try again."
         # Clean up temp dirs before aborting
-        if ($customModTempDir -and (Test-Path -LiteralPath $customModTempDir)) {
-            try { Remove-Item -LiteralPath $customModTempDir -Recurse -Force } catch {}
-        }
-        if ($preserveTempDir -and (Test-Path -LiteralPath $preserveTempDir)) {
-            try { Remove-Item -LiteralPath $preserveTempDir -Recurse -Force } catch {}
-        }
+        Remove-TempDir $customModTempDir
+        Remove-TempDir $preserveTempDir
         return
     }
 
@@ -819,12 +961,8 @@ function Invoke-StableUpdate {
         if (-not (Confirm-Action "Continue without rollback safety net?")) {
             Write-Info "Update cancelled."
             # Clean up temp dirs
-            if ($customModTempDir -and (Test-Path -LiteralPath $customModTempDir)) {
-                try { Remove-Item -LiteralPath $customModTempDir -Recurse -Force } catch {}
-            }
-            if ($preserveTempDir -and (Test-Path -LiteralPath $preserveTempDir)) {
-                try { Remove-Item -LiteralPath $preserveTempDir -Recurse -Force } catch {}
-            }
+            Remove-TempDir $customModTempDir
+            Remove-TempDir $preserveTempDir
             return
         }
     }
@@ -870,6 +1008,27 @@ function Invoke-StableUpdate {
             Write-Info "No custom mods to restore."
         }
 
+        # ── Restore override mods (if user chose to keep their versions) ──────
+        if ($keepOverrides -and $overrideConflicts.Count -gt 0 -and (Test-Path -LiteralPath $overrideModTempDir)) {
+            $modsDir = Join-Path $instancePath 'mods'
+            $overrideRestoredCount = 0
+            foreach ($oc in $overrideConflicts) {
+                $yourSource = Join-Path $overrideModTempDir $oc.YourVersion
+                if (Test-Path -LiteralPath $yourSource) {
+                    # Remove the pack's version first
+                    $packDest = Join-Path $modsDir $oc.PackVersion
+                    if (Test-Path -LiteralPath $packDest) {
+                        Remove-Item -LiteralPath $packDest -Force
+                    }
+                    Copy-Item -LiteralPath $yourSource -Destination (Join-Path $modsDir $oc.YourVersion) -Force
+                    $overrideRestoredCount++
+                }
+            }
+            if ($overrideRestoredCount -gt 0) {
+                Write-Success "Restored $overrideRestoredCount override mod(s)."
+            }
+        }
+
         # ── Apply config patches ──────────────────────────────────────────────
         Write-Step "Step 7/$totalSteps`: Applying config patches..."
 
@@ -897,6 +1056,22 @@ function Invoke-StableUpdate {
 
         Write-Host ""
         Write-Success "$($ChannelLabel.Substring(0,1).ToUpper() + $ChannelLabel.Substring(1)) update complete! $Target updated to v$latestVersion."
+        Write-Host ""
+        $openLabel = if ($IsWindows) { "Open $Target folder in Explorer" } else { "Open $Target folder in file manager" }
+        Write-MenuOption "O" $openLabel
+        Write-MenuOption "Enter" "Continue"
+        $postChoice = Read-MenuChoice "Choose"
+        if ($postChoice -eq 'O' -or $postChoice -eq 'o') {
+            try { Open-FolderInFileManager -Path $instancePath } catch { Write-Warn "Could not open folder: $($_.Exception.Message)" }
+        }
+        Write-Host ""
+        $openLabel = if ($IsWindows) { "Open $Target folder in Explorer" } else { "Open $Target folder in file manager" }
+        Write-MenuOption "O" $openLabel
+        Write-MenuOption "Enter" "Continue"
+        $postChoice = Read-MenuChoice "Choose"
+        if ($postChoice -eq 'O' -or $postChoice -eq 'o') {
+            try { Open-FolderInFileManager -Path $instancePath } catch { Write-Warn "Could not open folder: $($_.Exception.Message)" }
+        }
     }
     catch {
         if ($postDeletion) {
@@ -942,21 +1117,16 @@ function Invoke-StableUpdate {
     }
     finally {
         # Clean up temp dirs always
-        if ($customModTempDir -and (Test-Path -LiteralPath $customModTempDir)) {
-            try { Remove-Item -LiteralPath $customModTempDir -Recurse -Force } catch {}
-        }
-        if ($preserveTempDir -and (Test-Path -LiteralPath $preserveTempDir)) {
-            try { Remove-Item -LiteralPath $preserveTempDir -Recurse -Force } catch {}
-        }
+        Remove-TempDir $customModTempDir
+        Remove-TempDir $overrideModTempDir
+        Remove-TempDir $preserveTempDir
         # Clean up staging folder on success only; keep on failure/cancel
-        if ($updateSucceeded -and (Test-Path -LiteralPath $stagingDir)) {
-            try { Remove-Item -LiteralPath $stagingDir -Recurse -Force } catch {}
+        if ($updateSucceeded) {
+            Remove-TempDir $stagingDir
             Write-Info "Staging folder cleaned up."
         }
         # Clean up rollback snapshot on success (not needed anymore)
-        if ($updateSucceeded -and $rollbackDir -and (Test-Path -LiteralPath $rollbackDir)) {
-            try { Remove-Item -LiteralPath $rollbackDir -Recurse -Force } catch {}
-        }
+        if ($updateSucceeded) { Remove-TempDir $rollbackDir }
         # Clean up temp zip file (already cached by Invoke-FileDownload)
         if ($zipPath -and (Test-Path -LiteralPath $zipPath)) {
             try { Remove-Item -LiteralPath $zipPath -Force } catch {}

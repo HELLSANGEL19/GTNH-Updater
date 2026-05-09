@@ -10,6 +10,8 @@
 #   Show-CurrentConfig  - Display all current settings in formatted output
 #   Export-ConfigFile   - Export config to a specified file path
 #   Import-ConfigFile   - Import config from a specified file path
+#   Get-ProfileList     - Return all profile config files as structured objects
+#   Switch-Profile      - Point $script:ConfigPath at a profile, return loaded config
 #
 # Config schema version: 2
 # All fields are top-level in the JSON - no deep nesting beyond arrays of objects.
@@ -34,11 +36,14 @@ function New-DefaultConfig {
         NightlyUpdaterVersion  = ''
         CustomServerMods       = @()
         CustomClientMods       = @()
+        OverrideServerMods     = @()
+        OverrideClientMods     = @()
         AutoCheckUpdates       = $true
         ConfigPatches          = @()
         UpdateHistory          = @()
         ConfigVersion          = 2
         LastSeenScriptVersion  = ''
+        ProfileLabel           = ''
     }
 }
 
@@ -132,7 +137,7 @@ function Repair-Config {
     }
 
     # Ensure array fields are actually arrays (protects against corrupt config)
-    $arrayFields = @('CustomServerMods', 'CustomClientMods', 'ConfigPatches', 'UpdateHistory')
+    $arrayFields = @('CustomServerMods', 'CustomClientMods', 'OverrideServerMods', 'OverrideClientMods', 'ConfigPatches', 'UpdateHistory')
     foreach ($field in $arrayFields) {
         $val = $Config.$field
         if ($null -eq $val) {
@@ -258,4 +263,56 @@ function Import-ConfigFile {
         Write-Err "Failed to import config: $($_.Exception.Message)"
         return $null
     }
+}
+
+function Get-ProfileList {
+    <#
+    .SYNOPSIS
+        Return all profile config files in ScriptDir.
+    .OUTPUTS
+        Array of @{ Name; Label; Path; IsDefault } sorted: default first, then alpha.
+    #>
+    $profiles = @()
+
+    $defaultPath = Join-Path $script:ScriptDir 'gtnh-updater-config.json'
+    if (Test-Path -LiteralPath $defaultPath) {
+        $label = ''
+        try { $label = ((Get-Content -LiteralPath $defaultPath -Raw | ConvertFrom-Json).ProfileLabel ?? '') } catch {}
+        $profiles += [PSCustomObject]@{ Name = 'default'; Label = $label; Path = $defaultPath; IsDefault = $true }
+    }
+
+    Get-ChildItem -LiteralPath $script:ScriptDir -Filter 'gtnh-updater-config-*.json' -File |
+        Sort-Object Name |
+        ForEach-Object {
+            if ($_.Name -match '^gtnh-updater-config-(.+)\.json$') {
+                $name = $Matches[1]
+                $label = ''
+                try { $label = ((Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json).ProfileLabel ?? '') } catch {}
+                $profiles += [PSCustomObject]@{ Name = $name; Label = $label; Path = $_.FullName; IsDefault = $false }
+            }
+        }
+
+    return $profiles
+}
+
+function Switch-Profile {
+    <#
+    .SYNOPSIS
+        Point $script:ConfigPath at the given profile and return the loaded+repaired config.
+    .PARAMETER ProfileName
+        'default' or a named profile slug (e.g. 'daily').
+    .OUTPUTS
+        The loaded config, or $null if the file doesn't exist yet.
+    #>
+    param([Parameter(Mandatory)][string]$ProfileName)
+
+    $script:ConfigPath = if ($ProfileName -eq 'default') {
+        Join-Path $script:ScriptDir 'gtnh-updater-config.json'
+    } else {
+        Join-Path $script:ScriptDir "gtnh-updater-config-$ProfileName.json"
+    }
+
+    $config = Load-Config
+    if ($null -ne $config) { $config = Repair-Config -Config $config }
+    return $config
 }

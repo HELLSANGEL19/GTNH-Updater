@@ -135,20 +135,11 @@ function Invoke-StartupCleanup {
         }
     }
 
-    # Clean orphaned rollback snapshots and temp subdirectories in .temp/
+    # Clean orphaned temp subdirectories in .temp/ (but NOT rollback-* dirs —
+    # those are checked by Invoke-MainLoop immediately after this runs and
+    # cleaned up there after the user is notified).
     $tempDir = $script:TempDir
     if ($tempDir -and (Test-Path -LiteralPath $tempDir)) {
-        $rollbackDirs = Get-ChildItem -LiteralPath $tempDir -Directory -Filter 'rollback-*' -ErrorAction SilentlyContinue
-        foreach ($dir in $rollbackDirs) {
-            try {
-                Remove-Item -LiteralPath $dir.FullName -Recurse -Force
-                Write-Log "[CLEANUP] Removed orphaned rollback snapshot: $($dir.Name)"
-            }
-            catch {
-                # Silently continue
-            }
-        }
-
         # Clean orphaned preserved/, custom-mods/, nightly-custom-mods/ dirs
         $orphanedDirs = @('preserved', 'custom-mods', 'nightly-custom-mods')
         foreach ($dirName in $orphanedDirs) {

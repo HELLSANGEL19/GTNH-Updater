@@ -670,6 +670,20 @@ function Invoke-InteractiveSetup {
     if (Confirm-Action "Save this configuration?") {
         Save-Config -Config $config
         Write-Success "Configuration saved."
+
+        # Offer to set up a second profile — only when there's currently just one
+        $existingProfiles = Get-ProfileList
+        if ($existingProfiles.Count -eq 1) {
+            Write-Host ""
+            Write-Info "You can manage multiple independent instances (e.g. a daily test server)"
+            Write-Info "using profiles. Each profile has its own paths, channel, and mod list."
+            Write-Host ""
+            if (Confirm-Action "Set up an additional profile now?") {
+                # Delegate to the profile menu's create flow
+                $dummyConfig = $config  # profile menu needs a config to copy from
+                $null = Invoke-ProfileMenu -Config $dummyConfig
+            }
+        }
     }
     else {
         Write-Warn "Configuration not saved. You can re-run setup from the Settings menu."

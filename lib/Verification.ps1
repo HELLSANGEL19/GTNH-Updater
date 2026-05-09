@@ -91,7 +91,7 @@ function Invoke-Verification {
 
     # Target-specific checks
     if ($Target -eq 'server') {
-        $journeyMapServer = Join-Path $InstancePath 'config\JourneyMapServer'
+        $journeyMapServer = Join-Path $InstancePath 'config' 'JourneyMapServer'
         if (Test-Path -LiteralPath $journeyMapServer) {
             Write-Success "config/JourneyMapServer exists"
         } else {

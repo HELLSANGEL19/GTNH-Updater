@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.3.0-beta] - 2026-05-08
+
+### Added
+
+* Multiple profiles support: create, switch, rename, and delete independent GTNH instances from Settings > Profiles
+* Setup wizard now offers to create a second profile after initial configuration
+* Config auto-detection: stable updates automatically compare configs against pack defaults and save detected changes as patches
+* Active profile indicator on main menu status line
+* Override mods lists (OverrideServerMods, OverrideClientMods) with counts shown on main menu
+* Pre-update backup warning prompt shown before download begins
+* Pre-flight disk space check before downloading pack zip
+* Write-BackupWarning helper for color-coded backup reminder box
+* Test-IsNetworkException and New-ZipUrls helpers to reduce duplication in NetworkApi
+
+### Fixed
+
+* Disk space check in BackupManager now uses DriveInfo.AvailableFreeSpace instead of PSDrive.Free for accuracy
+* Startup cleanup no longer deletes rollback snapshots (deferred to main loop after user notification)
+* Linux file manager launch uses array arguments instead of quoted string to handle paths with spaces
+* Join-Path in Verification uses separate arguments instead of backslash concatenation for cross-platform correctness
+
+### Improved
+
+* Remove-TempDir helper consolidates repeated temp directory cleanup patterns across StableEngine and NightlyEngine
+* Find-KeyInLines extracted as a standalone function in ConfigPatcher with proper brace-depth tracking for section-aware key lookup
+* Target selection menu wrapped in a loop for consistent re-prompt behavior
+* Get-ProfileList and Switch-Profile added to ConfigManager for profile management
+
+
 ## [0.2.1-beta] - 2026-05-06
 
 ### Added

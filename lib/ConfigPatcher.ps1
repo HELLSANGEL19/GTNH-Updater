@@ -13,6 +13,55 @@
 # Path normalization: forward slashes replaced with backslashes before opening.
 # ============================================================================
 
+function Find-KeyInLines {
+    <#
+    .SYNOPSIS
+        Find the line index of a key within an optional section. Returns -1 if not found.
+    .PARAMETER Lines
+        Array of file lines to search.
+    .PARAMETER Key
+        The config key (already regex-escaped by caller if needed).
+    .PARAMETER Section
+        Optional section name to scope the search.
+    #>
+    param(
+        [Parameter(Mandatory)][string[]]$Lines,
+        [Parameter(Mandatory)][string]$Key,
+        [string]$Section = ''
+    )
+
+    $escapedKey = [regex]::Escape($Key)
+    $pattern = "^\s*${escapedKey}\s*="
+    $currentSection = ''
+    $inTargetSection = [string]::IsNullOrEmpty($Section)
+    $depth = 0  # brace nesting depth within the current section
+
+    for ($i = 0; $i -lt $Lines.Count; $i++) {
+        if ($Lines[$i] -match '^\s*"?([^"{}=#]+)"?\s*\{') {
+            $depth++
+            # Only update section tracking at depth 1 (top-level sections)
+            if ($depth -eq 1) {
+                $currentSection = $Matches[1].Trim()
+                if (-not [string]::IsNullOrEmpty($Section)) {
+                    $inTargetSection = $currentSection -eq $Section
+                }
+            }
+        }
+        elseif ($Lines[$i] -match '^\s*\}' -and -not [string]::IsNullOrEmpty($Section)) {
+            if ($depth -gt 0) { $depth-- }
+            # Only reset section tracking when we close a top-level section
+            if ($depth -eq 0) {
+                $inTargetSection = $false
+                $currentSection = ''
+            }
+        }
+        if ($inTargetSection -and $Lines[$i] -match $pattern) {
+            return $i
+        }
+    }
+    return -1
+}
+
 function Set-ConfigValue {
     <#
     .SYNOPSIS
@@ -57,39 +106,14 @@ function Set-ConfigValue {
 
     try {
         $lines = Get-Content -LiteralPath $fullPath -Encoding UTF8
-        $found = $false
 
-        # Escape special regex characters in the key
-        $escapedKey = [regex]::Escape($Key)
-        $pattern = "^\s*${escapedKey}\s*="
+        $i = Find-KeyInLines -Lines $lines -Key $Key -Section $Section
+        $found = $i -ge 0
 
-        # Track current section for section-scoped matching
-        $currentSection = ''
-        $inTargetSection = [string]::IsNullOrEmpty($Section)
-
-        for ($i = 0; $i -lt $lines.Count; $i++) {
-            # Track section headers and closings
-            if ($lines[$i] -match '^\s*"?([^"{}=#]+)"?\s*\{') {
-                $currentSection = $Matches[1].Trim()
-                if (-not [string]::IsNullOrEmpty($Section)) {
-                    $inTargetSection = $currentSection -eq $Section
-                }
-            }
-            elseif ($lines[$i] -match '^\s*\}' -and -not [string]::IsNullOrEmpty($Section)) {
-                $inTargetSection = $false
-                $currentSection = ''
-            }
-
-            if ($inTargetSection -and $lines[$i] -match $pattern) {
-                # Preserve leading whitespace
-                $leadingWhitespace = ''
-                if ($lines[$i] -match '^(\s*)') {
-                    $leadingWhitespace = $Matches[1]
-                }
-                $lines[$i] = "${leadingWhitespace}${Key}=${Value}"
-                $found = $true
-                break
-            }
+        if ($found) {
+            # Preserve leading whitespace
+            $leadingWhitespace = if ($lines[$i] -match '^(\s*)') { $Matches[1] } else { '' }
+            $lines[$i] = "${leadingWhitespace}${Key}=${Value}"
         }
 
         if ($found) {
@@ -160,29 +184,7 @@ function Invoke-ConfigPatches {
         # Check if the key exists in the file
         try {
             $lines = Get-Content -LiteralPath $fullPath -Encoding UTF8
-            $escapedKey = [regex]::Escape($patch.Key)
-            $pattern = "^\s*${escapedKey}\s*="
-            $keyFound = $false
-
-            $currentSection = ''
-            $inTargetSection = [string]::IsNullOrEmpty($patch.Section)
-
-            foreach ($line in $lines) {
-                if ($line -match '^\s*"?([^"{}=#]+)"?\s*\{') {
-                    $currentSection = $Matches[1].Trim()
-                    if (-not [string]::IsNullOrEmpty($patch.Section)) {
-                        $inTargetSection = $currentSection -eq $patch.Section
-                    }
-                }
-                elseif ($line -match '^\s*\}' -and -not [string]::IsNullOrEmpty($patch.Section)) {
-                    $inTargetSection = $false
-                    $currentSection = ''
-                }
-                if ($inTargetSection -and $line -match $pattern) {
-                    $keyFound = $true
-                    break
-                }
-            }
+            $keyFound = (Find-KeyInLines -Lines $lines -Key $patch.Key -Section ($patch.Section ?? '')) -ge 0
 
             if (-not $keyFound) {
                 $sectionNote = $patch.Section ? " in section '$($patch.Section)'" : ''
@@ -295,27 +297,10 @@ function Test-ConfigPatches {
         }
 
         $lines = Get-Content -LiteralPath $fullPath -Encoding UTF8
-        $escapedKey = [regex]::Escape($patch.Key)
-        $pattern = "^\s*${escapedKey}\s*="
         $currentValue = '(not found)'
-        $currentSection = ''
-        $inTargetSection = [string]::IsNullOrEmpty($patch.Section)
-
-        foreach ($line in $lines) {
-            if ($line -match '^\s*"?([^"{}=#]+)"?\s*\{') {
-                $currentSection = $Matches[1].Trim()
-                if (-not [string]::IsNullOrEmpty($patch.Section)) {
-                    $inTargetSection = $currentSection -eq $patch.Section
-                }
-            }
-            elseif ($line -match '^\s*\}' -and -not [string]::IsNullOrEmpty($patch.Section)) {
-                $inTargetSection = $false
-                $currentSection = ''
-            }
-            if ($inTargetSection -and $line -match $pattern) {
-                $currentValue = ($line -split '=', 2)[1].Trim()
-                break
-            }
+        $idx = Find-KeyInLines -Lines $lines -Key $patch.Key -Section ($patch.Section ?? '')
+        if ($idx -ge 0) {
+            $currentValue = ($lines[$idx] -split '=', 2)[1].Trim()
         }
         Write-Info "  Would be: $($patch.Key)=$($patch.Value)"
         $desc = $patch.Description ? "  ($($patch.Description))" : ''
@@ -452,16 +437,19 @@ function Invoke-ConfigBrowse {
     $lines = Get-Content -LiteralPath $selectedFile.FullPath -Encoding UTF8
     $keys = @()
     $currentSection = ''
+    $depth = 0
 
     for ($i = 0; $i -lt $lines.Count; $i++) {
         $line = $lines[$i]
 
         # Track section headers and closings
         if ($line -match '^\s*"?([^"{}=#]+)"?\s*\{') {
-            $currentSection = $Matches[1].Trim()
+            $depth++
+            if ($depth -eq 1) { $currentSection = $Matches[1].Trim() }
         }
         elseif ($line -match '^\s*\}') {
-            $currentSection = ''
+            if ($depth -gt 0) { $depth-- }
+            if ($depth -eq 0) { $currentSection = '' }
         }
 
         # Match key=value lines: B:key=value, I:key=value, S:key=value, or plain key=value (.properties)
@@ -628,10 +616,11 @@ function Invoke-ConfigPatchMenu {
             for ($i = 0; $i -lt $Config.ConfigPatches.Count; $i++) {
                 $p = $Config.ConfigPatches[$i]
                 $targetLabel = $p.Target -eq 'both' ? 'server+client' : $p.Target
+                $autoLabel   = $p.Source -eq 'auto' ? ' (auto)' : ''
                 $tag = "[$($i + 1)]".PadLeft($tagWidth)
                 Write-Host "  $tag " -NoNewline -ForegroundColor White
                 Write-Host "$($p.Description ?? $p.Key)" -NoNewline -ForegroundColor Cyan
-                Write-Host " [$targetLabel]" -ForegroundColor DarkGray
+                Write-Host " [$targetLabel]$autoLabel" -ForegroundColor DarkGray
                 Write-Host "      $($p.FilePath) | $($p.Key)=$($p.Value)" -ForegroundColor Gray
             }
         } else {
@@ -649,6 +638,7 @@ function Invoke-ConfigPatchMenu {
             Write-MenuOption -Key 'X' -Description 'Export patches to file'
         }
         Write-MenuOption -Key 'I' -Description 'Import patches from file'
+        Write-MenuOption -Key 'G' -Description 'Re-scan for config changes (compare your instance against the pack defaults)'
         if ($Config.ConfigPatches.Count -gt 0) {
             Write-MenuOption -Key 'C' -Description 'Clear all patches'
         }
@@ -671,11 +661,18 @@ function Invoke-ConfigPatchMenu {
 
                 $patch = Invoke-ConfigBrowse -InstancePath $browsePath
                 if ($null -ne $patch) {
-                    $patch | Add-Member -NotePropertyName 'Target' -NotePropertyValue 'both'
+                    Write-Info "Apply this patch to: [1] Server, [2] Client, [3] Both"
+                    $browseTargetChoice = Read-MenuChoice "Target"
+                    $browseTargetValue = switch ($browseTargetChoice) {
+                        '1' { 'server' }
+                        '2' { 'client' }
+                        default { 'both' }
+                    }
+                    $patch | Add-Member -NotePropertyName 'Target' -NotePropertyValue $browseTargetValue -Force
 
                     $Config.ConfigPatches += $patch
                     Save-Config -Config $Config
-                    Write-Success "Patch added: $($patch.Key) = $($patch.Value) [server+client]"
+                    Write-Success "Patch added: $($patch.Key) = $($patch.Value) [$browseTargetValue]"
                 }
                 Wait-ForKey
             }
@@ -1097,6 +1094,79 @@ function Invoke-ConfigPatchMenu {
                 }
                 Wait-ForKey
             }
+            'G' {
+                # Re-scan for config changes using the installed version's pack zip
+                Write-Info "Compares your current config files against the pack's defaults."
+                Write-Info "Any keys you've changed will be offered as new patches."
+                Write-Host ""
+                Write-Info "Re-scan against which target? [1] Server, [2] Client"
+                $scanTarget = Read-MenuChoice "Target"
+                $scanTargetName = $scanTarget -eq '1' ? 'server' : 'client'
+                $scanVersion    = $scanTarget -eq '1' ? $Config.InstalledServerVersion : $Config.InstalledClientVersion
+                $scanInstance   = $scanTarget -eq '1' ? $Config.ServerPath : $Config.ClientInstancePath
+
+                if ([string]::IsNullOrEmpty($scanVersion)) {
+                    Write-Warn "No installed version recorded for $scanTargetName. Set it in Settings > Update Preferences."
+                    Wait-ForKey; continue
+                }
+                if ([string]::IsNullOrEmpty($scanInstance) -or -not (Test-Path -LiteralPath $scanInstance)) {
+                    Write-Warn "No valid $scanTargetName path configured."
+                    Wait-ForKey; continue
+                }
+
+                # Find the release entry for the installed version
+                $releases = $script:CachedWebsiteReleases
+                if (-not $releases) {
+                    Write-Info "Fetching release list..."
+                    $releases = Get-WebsiteReleases -PackType ($Config.JavaVersion ?? 'java17')
+                }
+                $scanRelease = $releases | Where-Object { $_.Version -eq $scanVersion } | Select-Object -First 1
+                if (-not $scanRelease) {
+                    Write-Warn "Could not find v$scanVersion in release list."
+                    Wait-ForKey; continue
+                }
+
+                $scanZipUrl  = $scanTargetName -eq 'server' ? $scanRelease.ServerZipUrl  : $scanRelease.ClientZipUrl
+                $scanZipName = $scanTargetName -eq 'server' ? $scanRelease.ServerZipName : $scanRelease.ClientZipName
+                if (-not $scanZipUrl) {
+                    Write-Warn "No zip URL found for v$scanVersion $scanTargetName."
+                    Wait-ForKey; continue
+                }
+
+                # Use cache if available, otherwise download
+                $scanZipPath = Get-CachedFile -FileName $scanZipName
+                $tempZip     = $null
+                if ($scanZipPath) {
+                    Write-Info "Using cached pack: $scanZipName"
+                } else {
+                    if (-not (Test-Path -LiteralPath $script:TempDir)) {
+                        New-Item -Path $script:TempDir -ItemType Directory -Force | Out-Null
+                    }
+                    $tempZip     = Join-Path $script:TempDir $scanZipName
+                    $dlResult    = Invoke-FileDownload -Url $scanZipUrl -OutPath $tempZip -Description "v$scanVersion $scanTargetName pack"
+                    if (-not $dlResult) {
+                        Write-Warn "Download failed."
+                        if (Test-Path -LiteralPath $tempZip) { try { Remove-Item -LiteralPath $tempZip -Force } catch {} }
+                        Wait-ForKey; continue
+                    }
+                    $scanZipPath = $tempZip
+                }
+
+                try {
+                    $added = Invoke-ConfigDiffDetection `
+                        -BaselineZipPath $scanZipPath `
+                        -InstancePath    $scanInstance `
+                        -Config          $Config `
+                        -Target          $scanTargetName
+                    if ($added -eq 0) { Write-Info "No new changes detected." }
+                }
+                finally {
+                    if ($tempZip -and (Test-Path -LiteralPath $tempZip)) {
+                        try { Remove-Item -LiteralPath $tempZip -Force } catch {}
+                    }
+                }
+                Wait-ForKey
+            }
             'R' {
                 return
             }
@@ -1105,4 +1175,265 @@ function Invoke-ConfigPatchMenu {
             }
         }
     }
+}
+
+function Get-ConfigFileKeys {
+    <#
+    .SYNOPSIS
+        Parse a .cfg or .properties file into a flat hashtable of "section::key" => value.
+    .PARAMETER FilePath
+        Full path to the config file (used when Lines is not provided).
+    .PARAMETER Lines
+        Pre-read string array of lines (used when reading from a zip stream).
+    .OUTPUTS
+        Hashtable where keys are "section::key" (section is empty string for .properties).
+    #>
+    param(
+        [string]$FilePath,
+        [string[]]$Lines
+    )
+
+    $result = @{}
+    if (-not $Lines) {
+        try { $Lines = Get-Content -LiteralPath $FilePath -Encoding UTF8 -ErrorAction Stop }
+        catch { return $result }
+    }
+
+    $currentSection = ''
+    $depth = 0
+    foreach ($line in $Lines) {
+        if ($line -match '^\s*"?([^"{}=#]+)"?\s*\{') {
+            $depth++
+            if ($depth -eq 1) { $currentSection = $Matches[1].Trim() }
+        }
+        elseif ($line -match '^\s*\}') {
+            if ($depth -gt 0) { $depth-- }
+            if ($depth -eq 0) { $currentSection = '' }
+        }
+        elseif ($line -match '^\s*([BISD]:[^=]+?)\s*=\s*(.*)$') {
+            $result["${currentSection}::$($Matches[1].Trim())"] = $Matches[2].Trim()
+        }
+        elseif ($line -match '^\s*([a-zA-Z][\w\-\.]*)\s*=\s*(.*)$' -and $line -notmatch '^\s*#') {
+            $result["${currentSection}::$($Matches[1].Trim())"] = $Matches[2].Trim()
+        }
+    }
+    return $result
+}
+
+function Get-ConfigKeysFromZip {
+    <#
+    .SYNOPSIS
+        Read all patchable config files from a pack zip and return a hashtable of
+        relPath => (hashtable of "section::key" => value).
+    .PARAMETER ZipPath
+        Full path to the pack zip file.
+    .OUTPUTS
+        Hashtable: "config/relative/path.cfg" => (hashtable of keys).
+        Returns $null on failure.
+    #>
+    param([Parameter(Mandatory)][string]$ZipPath)
+
+    $result = @{}
+    try {
+        Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+        $zip = [System.IO.Compression.ZipFile]::OpenRead($ZipPath)
+        foreach ($entry in $zip.Entries) {
+            if ($entry.FullName -notmatch '(?:^|/)config/.*\.(cfg|properties)$') { continue }
+            # Normalise to "config/relative/path.cfg" (strip any leading folder)
+            $relPath = $entry.FullName -replace '^[^/]+/(?=config/)', '' -replace '^[^/]+/\.minecraft/(?=config/)', ''
+            if ($relPath -notmatch '^config/') { continue }
+            try {
+                $stream = $entry.Open()
+                $reader = [System.IO.StreamReader]::new($stream, [System.Text.Encoding]::UTF8)
+                $content = $reader.ReadToEnd()
+                $reader.Dispose(); $stream.Dispose()
+                $lines = $content -split "`r?`n"
+                $result[$relPath] = Get-ConfigFileKeys -Lines $lines
+            }
+            catch { }
+        }
+        $zip.Dispose()
+    }
+    catch {
+        Write-Log "[DIFF] Failed to read zip for config baseline: $($_.Exception.Message)"
+        return $null
+    }
+    return $result
+}
+
+function Invoke-ConfigDiffDetection {
+    <#
+    .SYNOPSIS
+        Three-way diff (previous pack zip vs. current instance vs. new pack zip) to
+        auto-detect user config changes and register them as patches.
+    .DESCRIPTION
+        BaselineZipPath  = previous pack zip (what the pack shipped last time)
+        StagingZipPath   = new pack zip (what the pack ships now); pass $null or same
+                           as BaselineZipPath when called from Re-scan (no new staging).
+        For each key in the baseline:
+          current == baseline            → user didn't change it, skip
+          current != baseline, staging == baseline → user changed it → auto-register
+          current != baseline, staging != baseline → conflict → prompt
+          key absent from staging        → skip (pack removed it)
+        Already-patched keys are always skipped.
+    .PARAMETER BaselineZipPath
+        Full path to the previous version's pack zip.
+    .PARAMETER InstancePath
+        Root path of the current instance.
+    .PARAMETER StagingZipPath
+        Full path to the new version's pack zip. Pass $null or same as BaselineZipPath
+        for a manual re-scan where there is no new staging.
+    .PARAMETER Config
+        The config PSCustomObject.
+    .PARAMETER Target
+        'server' or 'client'.
+    .OUTPUTS
+        Number of new patches registered.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$BaselineZipPath,
+        [Parameter(Mandatory)][string]$InstancePath,
+        [string]$StagingZipPath,
+        [Parameter(Mandatory)][PSCustomObject]$Config,
+        [Parameter(Mandatory)][ValidateSet('server','client')][string]$Target
+    )
+
+    if ([string]::IsNullOrEmpty($StagingZipPath)) { $StagingZipPath = $BaselineZipPath }
+
+    Write-Step "Analyzing config changes..."
+
+    $baselineMap = Get-ConfigKeysFromZip -ZipPath $BaselineZipPath
+    if ($null -eq $baselineMap) {
+        Write-Warn "Could not read baseline zip for config diff — skipping detection."
+        return 0
+    }
+
+    # Only read staging zip if it differs from baseline
+    $stagingMap = if ($StagingZipPath -eq $BaselineZipPath) { $baselineMap } else {
+        $m = Get-ConfigKeysFromZip -ZipPath $StagingZipPath
+        if ($null -eq $m) { $baselineMap } else { $m }
+    }
+
+    # Build already-patched lookup
+    $alreadyPatched = @{}
+    foreach ($p in $Config.ConfigPatches) {
+        $normFile = ($p.FilePath ?? '') -replace '[/\\]', '/'
+        $alreadyPatched["${normFile}::$($p.Section ?? '')::$($p.Key)"] = $true
+    }
+
+    $newPatches   = @()
+    $skippedCount = 0
+    $conflicts    = @()
+
+    foreach ($configRelPath in $baselineMap.Keys) {
+        $currentFile = Join-Path $InstancePath ($configRelPath -replace '/', [IO.Path]::DirectorySeparatorChar)
+        if (-not (Test-Path -LiteralPath $currentFile)) { continue }
+
+        $baselineKeys = $baselineMap[$configRelPath]
+        $stagingKeys  = $stagingMap.ContainsKey($configRelPath) ? $stagingMap[$configRelPath] : $baselineKeys
+        $currentKeys  = Get-ConfigFileKeys -FilePath $currentFile
+
+        foreach ($compositeKey in $baselineKeys.Keys) {
+            if (-not $stagingKeys.ContainsKey($compositeKey)) { continue }
+            if (-not $currentKeys.ContainsKey($compositeKey))  { continue }
+
+            $baseVal    = $baselineKeys[$compositeKey]
+            $currentVal = $currentKeys[$compositeKey]
+            $stagingVal = $stagingKeys[$compositeKey]
+
+            if ($currentVal -eq $baseVal) { continue }
+
+            $sepIdx  = $compositeKey.IndexOf('::')
+            $section = $compositeKey.Substring(0, $sepIdx)
+            $key     = $compositeKey.Substring($sepIdx + 2)
+
+            # Skip version-tracking keys — these are pack-managed and change every release
+            $bareKey = $key -replace '^[BISD]:', ''
+            if ($bareKey -match '(?i)^(version|modVersion|lastVersion|configVersion|schemaVersion)$') { continue }
+
+            if ($alreadyPatched.ContainsKey("${configRelPath}::${section}::${key}")) {
+                $skippedCount++
+                continue
+            }
+
+            if ($stagingVal -eq $baseVal) {
+                $newPatches += [PSCustomObject]@{
+                    FilePath    = $configRelPath
+                    Key         = $key
+                    Value       = $currentVal
+                    Description = ''
+                    Target      = $Target
+                    Section     = $section
+                    Source      = 'auto'
+                }
+            }
+            else {
+                $conflicts += [PSCustomObject]@{
+                    FilePath  = $configRelPath
+                    Key       = $key
+                    Section   = $section
+                    YourValue = $currentVal
+                    PackValue = $stagingVal
+                }
+            }
+        }
+    }
+
+    # ── Report and register ───────────────────────────────────────────────────
+    $totalNew = $newPatches.Count
+    if ($totalNew -eq 0 -and $conflicts.Count -eq 0 -and $skippedCount -eq 0) { return 0 }
+
+    Write-Host ""
+    Write-Host "  -- Config Change Detection --" -ForegroundColor Cyan
+
+    if ($totalNew -gt 0) {
+        Write-Host "  $totalNew change(s) auto-registered as patch(es):" -ForegroundColor Green
+        foreach ($p in $newPatches) {
+            $secNote = $p.Section ? " [$($p.Section)]" : ''
+            Write-Host "    + $($p.FilePath)  $($p.Key) = $($p.Value)$secNote" -ForegroundColor Green
+            Write-Log "[DIFF] Auto-registered patch: $($p.FilePath) | $($p.Key) = $($p.Value)"
+        }
+        foreach ($p in $newPatches) { $Config.ConfigPatches += $p }
+        Save-Config -Config $Config
+    }
+
+    if ($skippedCount -gt 0) {
+        Write-Host "  $skippedCount key(s) already covered by existing patches (skipped)" -ForegroundColor DarkGray
+    }
+
+    foreach ($conflict in $conflicts) {
+        Write-Host ""
+        Write-Host "  Conflict: $($conflict.FilePath)  $($conflict.Key)" -ForegroundColor Yellow
+        $secNote = $conflict.Section ? " [$($conflict.Section)]" : ''
+        Write-Host "    Your value:       $($conflict.YourValue)$secNote" -ForegroundColor Cyan
+        Write-Host "    Pack's new value: $($conflict.PackValue)" -ForegroundColor DarkYellow
+        Write-Host ""
+        Write-MenuOption 'K' 'Keep mine (save as patch)'
+        Write-MenuOption 'U' "Use pack's value"
+        Write-MenuOption 'S' 'Skip (pack wins this update, no patch saved)'
+
+        $choice = Read-MenuChoice 'Choose'
+        switch ($choice.ToUpper()) {
+            'K' {
+                $Config.ConfigPatches += [PSCustomObject]@{
+                    FilePath    = $conflict.FilePath
+                    Key         = $conflict.Key
+                    Value       = $conflict.YourValue
+                    Description = ''
+                    Target      = $Target
+                    Section     = $conflict.Section
+                    Source      = 'auto'
+                }
+                Save-Config -Config $Config
+                $totalNew++
+                Write-Log "[DIFF] Conflict resolved (kept mine): $($conflict.FilePath) | $($conflict.Key) = $($conflict.YourValue)"
+            }
+            'U' { Write-Log "[DIFF] Conflict resolved (used pack's): $($conflict.FilePath) | $($conflict.Key) = $($conflict.PackValue)" }
+            default { Write-Log "[DIFF] Conflict skipped: $($conflict.FilePath) | $($conflict.Key)" }
+        }
+    }
+
+    Write-Log "[DIFF] Detection complete: $totalNew new patch(es), $($conflicts.Count) conflict(s), $skippedCount skipped"
+    Write-Host ""
+    return $totalNew
 }

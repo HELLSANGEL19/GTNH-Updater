@@ -52,8 +52,9 @@ function Invoke-ScriptBackup {
 
     # Check disk space (warn if < 3 GB free)
     try {
-        $drive = (Get-Item -LiteralPath $backupDir).PSDrive
-        $freeSpaceGB = [math]::Round($drive.Free / 1GB, 2)
+        $driveRoot = [System.IO.Path]::GetPathRoot($backupDir)
+        $driveInfo = [System.IO.DriveInfo]::new($driveRoot)
+        $freeSpaceGB = [math]::Round($driveInfo.AvailableFreeSpace / 1GB, 2)
         if ($freeSpaceGB -lt 3) {
             Write-Warn "Low disk space on backup drive: ${freeSpaceGB} GB free (recommend 3+ GB)"
             if (-not (Confirm-Action "Continue with backup anyway?")) {

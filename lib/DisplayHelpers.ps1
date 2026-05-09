@@ -255,6 +255,22 @@ function Wait-ForKey {
     $null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
 }
 
+function Write-BackupWarning {
+    <#
+    .SYNOPSIS
+        Display the pre-update backup reminder box (server=Red, client=DarkYellow).
+    .PARAMETER Target
+        'server' or 'client'.
+    #>
+    param([Parameter(Mandatory)][string]$Target)
+    $color = $Target -eq 'server' ? 'Red' : 'DarkYellow'
+    $msg   = $Target -eq 'server' ? 'Back up your server and make sure it is STOPPED.           ' `
+                                   : 'Back up your client instance before continuing.            '
+    Write-Host "  ╔══════════════════════════════════════════════════════════════╗" -ForegroundColor $color
+    Write-Host "  ║  $msg║" -ForegroundColor $color
+    Write-Host "  ╚══════════════════════════════════════════════════════════════╝" -ForegroundColor $color
+}
+
 function Open-FolderInFileManager {
     <#
     .SYNOPSIS
@@ -275,14 +291,14 @@ function Open-FolderInFileManager {
     else {
         # Linux: use xdg-open (available on most desktop environments)
         try {
-            Start-Process 'xdg-open' -ArgumentList "`"$Path`""
+            Start-Process 'xdg-open' -ArgumentList @($Path)
         }
         catch {
             # Fallback: try common alternatives
             $opened = $false
             foreach ($opener in @('nautilus', 'dolphin', 'thunar', 'nemo', 'pcmanfm')) {
                 if (Get-Command $opener -ErrorAction SilentlyContinue) {
-                    Start-Process $opener -ArgumentList "`"$Path`""
+                    Start-Process $opener -ArgumentList @($Path)
                     $opened = $true
                     break
                 }
