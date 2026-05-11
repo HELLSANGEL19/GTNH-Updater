@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.3.1-beta] - 2026-05-11
+
+### Improved
+
+* Daily/Experimental updates now use the gtnh-daily-updater Go binary instead of the Java-based nightly updater JAR ΓÇö Java 21+ is no longer required
+* Switched nightly updater source to the Caedis/gtnh-daily-updater GitHub repository
+* Updated README, help screen, and channel descriptions to reflect no Java requirement for daily/experimental channels
+
+
 ## [0.3.0-beta] - 2026-05-08
 
 ### Added

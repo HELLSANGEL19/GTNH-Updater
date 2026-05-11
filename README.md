@@ -1,6 +1,6 @@
 # GTNH Updater
 
-**Version 0.3.0-beta**
+**Version 0.3.1-beta**
 
 Automates updating [GregTech: New Horizons](https://www.gtnewhorizons.com/) server and client instances on Windows and Linux. Interactive and menu-driven. Works with any server setup and any launcher that uses a standard `.minecraft` folder structure (Prism Launcher, MultiMC, PolyMC, ATLauncher, etc.). Auto-detection finds common server paths and launcher directories, but any instance path can be entered manually.
 
@@ -10,7 +10,6 @@ Automates updating [GregTech: New Horizons](https://www.gtnewhorizons.com/) serv
 
 - **Windows 10/11 or Linux** (any distro with a desktop environment or headless server)
 - **PowerShell 7** - The launcher will offer to install it for you if it's not found. Or [download it manually](https://github.com/PowerShell/PowerShell/releases).
-- **Java 21+** - Only needed if you use the Daily or Experimental update channels. [Download here](https://adoptium.net/temurin/releases/).
 
 ## Getting Started
 
@@ -65,7 +64,7 @@ If you only manage a server, you'll never be asked about client paths. The tool 
 
 When you select **Update GTNH** with the Stable channel:
 
-1. Shows a **Version 0.3.0-beta** listing all available releases (stable and beta/RC), newest first
+1. Shows a **Version 0.3.1-beta** listing all available releases (stable and beta/RC), newest first
 2. If both server and client are configured, asks which target. If only one is configured, it's selected automatically.
 3. Downloads the selected pack (with progress bar and speed display) and verifies integrity
 4. Extracts to a staging folder for preview
@@ -104,8 +103,8 @@ If something goes wrong mid-update, the tool offers automatic rollback for both 
 | Channel      | What it is                                              |
 |--------------|---------------------------------------------------------|
 | Stable       | Official releases from gtnewhorizons.com. Recommended. The version picker also lists beta/RC builds. |
-| Daily        | Dev builds from GitHub. Updated daily. Requires Java 21+. |
-| Experimental | Bleeding-edge builds from GitHub. May be unstable. Requires Java 21+. |
+| Daily        | Dev builds from GitHub. Updated daily. |
+| Experimental | Bleeding-edge builds from GitHub. May be unstable. |
 
 GTNH's release cycle is: Experimental -> Daily -> Beta -> Stable. When you pick "Update GTNH" on the Stable channel, the version picker shows both stable and beta/RC releases from the [version history page](https://www.gtnewhorizons.com/version-history). No channel switching needed to install a beta.
 

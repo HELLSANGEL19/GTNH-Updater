@@ -55,7 +55,7 @@ $script:NightlyUpdaterDir = Join-Path $script:ScriptDir '.nightly-updater'
 
 # API URLs and download base
 $script:GtnhDownloadsBase = 'https://downloads.gtnewhorizons.com'
-$script:NightlyUpdaterApi = 'https://api.github.com/repos/GTNewHorizons/gtnh-nightly-updater/releases/latest'
+$script:NightlyUpdaterApi = 'https://api.github.com/repos/Caedis/gtnh-daily-updater/releases/latest'
 $script:ScriptUpdateApi = 'https://api.github.com/repos/HELLSANGEL19/GTNH-Updater/releases'
 
 # Folder lists for deletion during updates

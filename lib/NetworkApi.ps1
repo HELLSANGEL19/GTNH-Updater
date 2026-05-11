@@ -740,15 +740,15 @@ function Get-ScriptUpdateInfo {
 function Get-LatestNightlyUpdater {
     <#
     .SYNOPSIS
-        Check for and download the latest nightly updater JAR.
+        Check for and download the latest gtnh-daily-updater binary.
     .DESCRIPTION
-        Queries the nightly updater GitHub releases API, compares with the
-        tracked version in config, downloads if newer. Falls back to existing
-        local JAR on network failure. Returns the path to the JAR file or $null.
+        Queries the gtnh-daily-updater GitHub releases API, compares with the
+        tracked version in config, downloads the platform-appropriate binary if
+        newer. Falls back to existing local binary on network failure.
     .PARAMETER Config
         The config PSCustomObject containing NightlyUpdaterVersion.
     .OUTPUTS
-        Path to the nightly updater JAR file, or $null if unavailable.
+        Path to the gtnh-daily-updater binary, or $null if unavailable.
     #>
     param(
         [Parameter(Mandatory)][PSCustomObject]$Config
@@ -756,69 +756,80 @@ function Get-LatestNightlyUpdater {
 
     $updaterDir = $script:NightlyUpdaterDir
 
-    # Ensure the updater directory exists
     if (-not (Test-Path -LiteralPath $updaterDir)) {
         New-Item -Path $updaterDir -ItemType Directory -Force | Out-Null
     }
 
-    # Find existing local JAR
-    $existingJar = Get-ChildItem -LiteralPath $updaterDir -Filter '*.jar' -ErrorAction SilentlyContinue |
-        Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    # Determine platform-appropriate binary name
+    $binaryName = if ($IsWindows) { 'gtnh-daily-updater.exe' } else { 'gtnh-daily-updater' }
+
+    # Find existing local binary
+    $existingBinary = Join-Path $updaterDir $binaryName
+    $existingBinaryExists = Test-Path -LiteralPath $existingBinary
 
     # Query GitHub for latest release
     $release = Invoke-GitHubApi -Uri $script:NightlyUpdaterApi
 
     if (-not $release) {
-        # Network failed - fall back to existing local JAR
-        if ($existingJar) {
-            Write-Warn "Could not check for nightly updater updates. Using existing local JAR."
-            return $existingJar.FullName
+        if ($existingBinaryExists) {
+            Write-Warn "Could not check for updater updates. Using existing binary."
+            return $existingBinary
         }
-        else {
-            Write-Err "Cannot download nightly updater and no local copy exists."
-            return $null
-        }
+        Write-Err "Cannot download gtnh-daily-updater and no local copy exists."
+        return $null
     }
 
     $latestVersion = $release.tag_name
     $currentVersion = $Config.NightlyUpdaterVersion ?? ''
 
-    # Compare versions - download if newer or no local copy
-    if ($latestVersion -ne $currentVersion -or -not $existingJar) {
-        Write-Step "Updating nightly updater: $currentVersion -> $latestVersion"
+    if ($latestVersion -ne $currentVersion -or -not $existingBinaryExists) {
+        Write-Step "Updating daily updater: $currentVersion -> $latestVersion"
 
-        # Find the .jar asset
-        $jarAsset = $release.assets | Where-Object { $_.name -match '\.jar$' } | Select-Object -First 1
+        # Find the platform-appropriate asset
+        $osTag = if ($IsWindows) { 'windows' } elseif ($IsMacOS) { 'darwin' } else { 'linux' }
+        $archTag = if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq 'Arm64') { 'arm64' } else { 'amd64' }
+        $assetPattern = "${osTag}.*${archTag}|${archTag}.*${osTag}"
+        $asset = $release.assets | Where-Object { $_.name -match $assetPattern } | Select-Object -First 1
 
-        if (-not $jarAsset) {
-            Write-Warn "No JAR asset found in nightly updater release."
-            if ($existingJar) {
-                return $existingJar.FullName
-            }
+        # Fallback: any asset matching the OS
+        if (-not $asset) {
+            $asset = $release.assets | Where-Object { $_.name -match $osTag } | Select-Object -First 1
+        }
+
+        if (-not $asset) {
+            Write-Warn "No binary asset found for $osTag/$archTag in release $latestVersion."
+            if ($existingBinaryExists) { return $existingBinary }
             return $null
         }
 
-        $jarPath = Join-Path $updaterDir $jarAsset.name
-        $downloaded = Invoke-FileDownload -Url $jarAsset.browser_download_url -OutPath $jarPath -Description 'nightly updater JAR'
+        $downloadPath = Join-Path $updaterDir $asset.name
+        $downloaded = Invoke-FileDownload -Url $asset.browser_download_url -OutPath $downloadPath -Description 'daily updater binary'
 
         if ($downloaded) {
-            # Update config version
+            # Rename/move to standard binary name
+            if ($downloadPath -ne $existingBinary) {
+                if (Test-Path -LiteralPath $existingBinary) { Remove-Item -LiteralPath $existingBinary -Force }
+                Move-Item -LiteralPath $downloadPath -Destination $existingBinary -Force
+            }
+            # Make executable on Linux/Mac
+            if (-not $IsWindows) {
+                try { & chmod +x $existingBinary } catch {}
+            }
             $Config.NightlyUpdaterVersion = $latestVersion
             Save-Config -Config $Config
-            return $jarPath
+            return $existingBinary
         }
         else {
-            # Download failed - fall back to existing
-            if ($existingJar) {
-                Write-Warn "Download failed. Using existing nightly updater JAR."
-                return $existingJar.FullName
+            if ($existingBinaryExists) {
+                Write-Warn "Download failed. Using existing binary."
+                return $existingBinary
             }
-            Write-Err "Failed to download nightly updater and no local copy exists."
+            Write-Err "Failed to download daily updater and no local copy exists."
             return $null
         }
     }
     else {
-        Write-Info "Nightly updater is up to date ($latestVersion)."
-        return $existingJar.FullName
+        Write-Info "Daily updater is up to date ($latestVersion)."
+        return $existingBinary
     }
 }

@@ -2,14 +2,13 @@
 # Group 11: Daily/Experimental Update Engine - Orchestrate dev build updates
 # ============================================================================
 # Functions:
-#   Invoke-NightlyUpdate     - Full update flow: Java check -> JAR update ->
-#                               back up custom mods -> invoke JAR -> restore ->
+#   Invoke-NightlyUpdate     - Full update flow: binary update ->
+#                               back up custom mods -> invoke binary -> restore ->
 #                               patch -> verify -> history
-#   Invoke-NightlyUpdaterJar - Build and execute the Java command line, stream output
+#   Invoke-NightlyUpdaterJar - Build and execute the gtnh-daily-updater binary
 #
-# Daily/Experimental updates use the official gtnh-nightly-updater.jar which
-# handles downloading and applying the update. This engine wraps it with
-# custom mod preservation, config patching, and verification.
+# Daily/Experimental updates use gtnh-daily-updater (Go binary) which
+# handles downloading and applying the update. No Java required.
 # ============================================================================
 
 function Invoke-NightlyUpdate {
@@ -58,48 +57,12 @@ function Invoke-NightlyUpdate {
 
     Write-Header "$($Channel.ToUpper()) Update - $($Target.ToUpper())"
 
-    # ── Step 1: Check Java 21+ ────────────────────────────────────────────────
-    Write-Step "Checking Java version..."
-
-    $javaPath = $Config.JavaPath
-    if ([string]::IsNullOrEmpty($javaPath) -or -not (Test-Path -LiteralPath $javaPath)) {
-        Write-Err "Java path not configured or not found: $javaPath"
-        Write-Info "Configure a valid Java 21+ path in Settings."
-        return
-    }
-
-    # Parse Java version
-    $javaVersionOutput = $null
-    try {
-        $javaVersionOutput = & $javaPath -version 2>&1 | Out-String
-    }
-    catch {
-        Write-Err "Could not execute Java: $($_.Exception.Message)"
-        return
-    }
-
-    $javaMajorVersion = 0
-    if ($javaVersionOutput -match '"(\d+)[\._]') {
-        $javaMajorVersion = [int]$Matches[1]
-    } elseif ($javaVersionOutput -match 'version "(\d+)') {
-        $javaMajorVersion = [int]$Matches[1]
-    }
-
-    if ($javaMajorVersion -lt 21) {
-        Write-Err "Java 21 or newer is required for daily/experimental channels. Found: Java $javaMajorVersion"
-        Write-Info "Path: $javaPath"
-        Write-Info "Download Java 21+: https://adoptium.net/temurin/releases/"
-        return
-    }
-
-    Write-Success "Java $javaMajorVersion detected."
-
-    # ── Step 2: Get/update nightly updater JAR ────────────────────────────────
-    Write-Step "Checking updater JAR..."
+    # ── Step 1: Get/update daily updater binary ───────────────────────────────
+    Write-Step "Checking daily updater..."
 
     $jarPath = Get-LatestNightlyUpdater -Config $Config
     if (-not $jarPath) {
-        Write-Err "Updater JAR is not available. Cannot proceed."
+        Write-Err "Daily updater binary is not available. Cannot proceed."
         return
     }
 
@@ -210,7 +173,7 @@ function Invoke-NightlyUpdate {
     $targets = @{}
     $targets[$Target] = $instancePath
 
-    $success = Invoke-NightlyUpdaterJar -JavaPath $javaPath -JarPath $jarPath -Channel $Channel -Targets $targets
+    $success = Invoke-NightlyUpdaterJar -JarPath $jarPath -Channel $Channel -Targets $targets
 
     if (-not $success) {
         Write-Err "Update failed. Check output above for details."
@@ -328,126 +291,92 @@ function Invoke-NightlyUpdate {
 function Invoke-NightlyUpdaterJar {
     <#
     .SYNOPSIS
-        Build and execute the nightly updater Java command, streaming output.
-    .DESCRIPTION
-        Constructs the command line:
-          java -jar <jar> -M <CHANNEL> --add -s SERVER -m <path> --add -s CLIENT -m <path>
-        Streams stdout line by line in gray text. Checks exit code.
+        Execute gtnh-daily-updater binary, streaming output.
     .PARAMETER JavaPath
-        Full path to java.exe (Java 21+).
+        Unused - kept for call-site compatibility. Pass $null.
     .PARAMETER JarPath
-        Full path to the nightly updater JAR.
+        Full path to the gtnh-daily-updater binary.
     .PARAMETER Channel
         The nightly channel: 'daily' or 'experimental'.
     .PARAMETER Targets
-        Hashtable of target->path (e.g., @{ 'server' = 'D:\path'; 'client' = 'C:\path' }).
+        Hashtable of target->path (e.g., @{ 'server' = 'D:\path' }).
     .OUTPUTS
-        $true if the JAR exited with code 0, $false otherwise.
+        $true if exited with code 0, $false otherwise.
     #>
     param(
-        [Parameter(Mandatory)][string]$JavaPath,
+        [string]$JavaPath,
         [Parameter(Mandatory)][string]$JarPath,
         [Parameter(Mandatory)][ValidateSet('daily', 'experimental')][string]$Channel,
         [Parameter(Mandatory)][hashtable]$Targets
     )
 
-    # Build the command arguments
-    $channelFlag = $Channel.ToUpper()
-    $javaArgs = @('-jar', $JarPath, '-M', $channelFlag)
-
-    # Add target blocks
-    foreach ($targetKey in $Targets.Keys) {
-        $side = $targetKey.ToUpper()
-        $path = $Targets[$targetKey]
-        $javaArgs += '--add'
-        $javaArgs += '-s'
-        $javaArgs += $side
-        $javaArgs += '-m'
-        $javaArgs += $path
-    }
-
-    $commandLine = "$JavaPath $($javaArgs -join ' ')"
-    Write-Log "[NIGHTLY] Executing: $commandLine"
-    Write-Info "Command: java -jar $(Split-Path -Leaf $JarPath) -M $channelFlag ..."
+    Write-Log "[NIGHTLY] Executing: $JarPath update --mode $Channel ..."
+    Write-Info "Command: gtnh-daily-updater update --mode $Channel ..."
 
     try {
-        # Start the process and stream output
-        $processInfo = New-Object System.Diagnostics.ProcessStartInfo
-        $processInfo.FileName = $JavaPath
-        # Use ArgumentList (array) instead of Arguments (string) for correct
-        # handling of paths with spaces - no manual quoting needed
-        foreach ($arg in $javaArgs) {
-            $processInfo.ArgumentList.Add($arg)
-        }
-        $processInfo.RedirectStandardOutput = $true
-        $processInfo.RedirectStandardError = $true
-        $processInfo.UseShellExecute = $false
-        $processInfo.CreateNoWindow = $true
+        foreach ($targetKey in $Targets.Keys) {
+            $instancePath = $Targets[$targetKey]
+            $side = $targetKey.ToLower()
 
-        $process = New-Object System.Diagnostics.Process
-        $process.StartInfo = $processInfo
-        $process.Start() | Out-Null
-
-        # Read stderr asynchronously to prevent deadlock when both stdout and
-        # stderr buffers fill. Synchronous reads on both streams can hang if
-        # the child process writes enough to stderr to fill the OS pipe buffer
-        # while we're blocked reading stdout.
-        $stderrTask = $process.StandardError.ReadToEndAsync()
-
-        # Stream stdout line by line in gray and log it
-        $lastLines = @()
-        while (-not $process.StandardOutput.EndOfStream) {
-            $line = $process.StandardOutput.ReadLine()
-            Write-Host "    $line" -ForegroundColor Gray
-            if (Get-Command Write-Log -ErrorAction SilentlyContinue) {
-                Write-Log "[JAR] $line"
-            }
-            $lastLines += $line
-            # Keep only last 20 lines for error reporting
-            if ($lastLines.Count -gt 20) {
-                $lastLines = $lastLines[-20..-1]
-            }
-        }
-
-        # Wait for stderr to finish and get the result
-        $stderr = $stderrTask.GetAwaiter().GetResult()
-
-        # Wait with timeout (30 minutes) to prevent hanging forever
-        $exited = $process.WaitForExit(1800000)  # 30 min in milliseconds
-        if (-not $exited) {
-            Write-Err "Nightly updater timed out after 30 minutes."
-            Write-Log "[ERROR] Nightly updater timed out - killing process."
-            try { $process.Kill() } catch {}
-            return $false
-        }
-
-        $exitCode = $process.ExitCode
-
-        if ($exitCode -ne 0) {
-            Write-Err "Nightly updater failed (exit code $exitCode)."
-            if ($stderr) {
-                Write-Err "stderr: $stderr"
-            }
-            if ($lastLines.Count -gt 0) {
-                Write-Info "Last output lines:"
-                $lastLines | Select-Object -Last 5 | ForEach-Object {
-                    Write-Info "  $_"
+            # Auto-init if the instance has not been initialized yet
+            $stateFile = Join-Path $instancePath '.gtnh-daily-updater-state.json'
+            if (-not (Test-Path -LiteralPath $stateFile)) {
+                Write-Info "Initializing daily updater for $targetKey instance..."
+                & $JarPath init --instance-dir $instancePath --side $side --mode $Channel 2>&1 |
+                    ForEach-Object { Write-Host "    $_" -ForegroundColor Gray }
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Err "Init failed for $targetKey."
+                    return $false
                 }
+                Write-Success "Initialized."
             }
-            Write-Log "[ERROR] Nightly updater exit code $exitCode. stderr: $stderr"
-            return $false
-        }
 
+            $processInfo = New-Object System.Diagnostics.ProcessStartInfo
+            $processInfo.FileName = $JarPath
+            foreach ($arg in @('update', '--instance-dir', $instancePath)) {
+                $processInfo.ArgumentList.Add($arg)
+            }
+            $processInfo.RedirectStandardOutput = $true
+            $processInfo.RedirectStandardError  = $true
+            $processInfo.UseShellExecute  = $false
+            $processInfo.CreateNoWindow   = $true
+
+            $process = New-Object System.Diagnostics.Process
+            $process.StartInfo = $processInfo
+            $process.Start() | Out-Null
+
+            $stderrTask = $process.StandardError.ReadToEndAsync()
+            $lastLines = @()
+            while (-not $process.StandardOutput.EndOfStream) {
+                $line = $process.StandardOutput.ReadLine()
+                Write-Host "    $line" -ForegroundColor Gray
+                Write-Log "[DAILY] $line"
+                $lastLines += $line
+                if ($lastLines.Count -gt 20) { $lastLines = $lastLines[-20..-1] }
+            }
+
+            $stderr = $stderrTask.GetAwaiter().GetResult()
+            $exited = $process.WaitForExit(1800000)
+            if (-not $exited) {
+                Write-Err "Daily updater timed out after 30 minutes."
+                try { $process.Kill() } catch {}
+                return $false
+            }
+
+            if ($process.ExitCode -ne 0) {
+                Write-Err "Daily updater failed (exit code $($process.ExitCode))."
+                if ($stderr) { Write-Err "stderr: $stderr" }
+                Write-Log "[ERROR] Daily updater exit $($process.ExitCode). stderr: $stderr"
+                return $false
+            }
+
+            try { $process.Dispose() } catch {}
+        }
         return $true
     }
     catch {
-        Write-Err "Failed to execute nightly updater: $($_.Exception.Message)"
-        Write-Log "[ERROR] Nightly updater execution failed: $($_.Exception.ToString())"
+        Write-Err "Failed to execute daily updater: $($_.Exception.Message)"
+        Write-Log "[ERROR] Daily updater execution failed: $($_.Exception.ToString())"
         return $false
-    }
-    finally {
-        if ($process) {
-            try { $process.Dispose() } catch {}
-        }
     }
 }

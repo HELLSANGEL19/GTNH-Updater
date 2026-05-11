@@ -2187,7 +2187,7 @@ function Show-HelpScreen {
     Write-Host "  Updates your server and/or client using your default channel." -ForegroundColor Gray
     Write-Host "  Stable: shows a version picker (stable + beta/RC), downloads the" -ForegroundColor Gray
     Write-Host "  pack zip, and shows a full mod comparison before anything changes." -ForegroundColor Gray
-    Write-Host "  Daily/Experimental: uses the official GTNH updater JAR (Java 21+)." -ForegroundColor Gray
+    Write-Host "  Daily/Experimental: uses the official GTNH updater binary (no Java needed)." -ForegroundColor Gray
     Write-Host "  If only one target is configured it's selected automatically." -ForegroundColor Gray
     Write-Host ""
 
@@ -2226,8 +2226,8 @@ function Show-HelpScreen {
     Write-Host "  " -NoNewline
     Write-Host "Channels" -ForegroundColor Cyan
     Write-Host "  Stable  = official releases from gtnewhorizons.com (recommended)." -ForegroundColor Gray
-    Write-Host "  Daily   = dev builds updated daily. Requires Java 21+." -ForegroundColor Gray
-    Write-Host "  Experimental = bleeding edge, may be unstable. Requires Java 21+." -ForegroundColor Gray
+    Write-Host "  Daily   = dev builds updated daily. No Java required." -ForegroundColor Gray
+    Write-Host "  Experimental = bleeding edge, may be unstable. No Java required." -ForegroundColor Gray
     Write-Host "  Release cycle: Experimental -> Daily -> Beta -> Stable." -ForegroundColor Gray
     Write-Host "  Change channel in Settings > Update Preferences." -ForegroundColor Gray
     Write-Host ""
