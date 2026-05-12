@@ -94,8 +94,9 @@ $script:CachedWebsiteReleases = $null
 . "$script:ScriptDir\lib\HistoryVersion.ps1"
 . "$script:ScriptDir\lib\MenuSystem.ps1"
 $script:DevMode = $false
-if ($script:ScriptDir -like '*-DEV*') {
-    . "$script:ScriptDir\lib\DevTools.ps1"
+$_dt = Join-Path $script:ScriptDir 'lib\DevTools.ps1'
+if (Test-Path -LiteralPath $_dt) {
+    . $_dt
     $script:DevMode = $true
 }
 
@@ -103,45 +104,54 @@ if ($script:ScriptDir -like '*-DEV*') {
 # ENTRY POINT
 # ============================================================================
 
-# Prevent concurrent runs with a lock file
-$script:LockFile = Join-Path $script:ScriptDir '.updater.lock'
-$script:WeCreatedLock = $false
+# Prevent concurrent instances from corrupting config or instance files
+$script:LockFilePath = Join-Path $script:ScriptDir '.gtnh-updater.lock'
+
+function Test-LockFile {
+    if (-not (Test-Path -LiteralPath $script:LockFilePath)) { return $false }
+    try {
+        $lockContent = Get-Content -LiteralPath $script:LockFilePath -Raw -ErrorAction Stop
+        $lockPid = [int]($lockContent.Trim())
+        # Check if the process is still running
+        $proc = Get-Process -Id $lockPid -ErrorAction SilentlyContinue
+        return ($null -ne $proc)
+    }
+    catch {
+        # Lock file is corrupt or unreadable - treat as stale
+        return $false
+    }
+}
+
+function New-LockFile {
+    try {
+        $PID.ToString() | Set-Content -LiteralPath $script:LockFilePath -Encoding UTF8 -Force
+    }
+    catch {
+        # Non-fatal: warn but continue (might be a read-only filesystem edge case)
+        Write-Host "  [!] Could not create lock file. Concurrent runs are not protected." -ForegroundColor DarkYellow
+    }
+}
+
+function Remove-LockFile {
+    if (Test-Path -LiteralPath $script:LockFilePath) {
+        try { Remove-Item -LiteralPath $script:LockFilePath -Force } catch {}
+    }
+}
+
+if (Test-LockFile) {
+    Write-Host ""
+    Write-Host "  [!] Another instance of GTNH Updater appears to be running." -ForegroundColor Red
+    Write-Host "  If this is wrong (e.g., a previous crash), delete:" -ForegroundColor DarkYellow
+    Write-Host "  $($script:LockFilePath)" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "  Press any key to exit..." -ForegroundColor DarkGray
+    $null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
+    exit 1
+}
+
+New-LockFile
 
 try {
-    # Check for existing lock file (another instance running or previous crash)
-    if (Test-Path -LiteralPath $script:LockFile) {
-        $lockContent = Get-Content -LiteralPath $script:LockFile -Raw -ErrorAction SilentlyContinue
-        $lockAge = $null
-        try {
-            $lockTime = [datetime]::ParseExact($lockContent.Trim(), 'yyyy-MM-dd HH:mm:ss', $null)
-            $lockAge = (Get-Date) - $lockTime
-        } catch {}
-
-        # If the lock is older than 12 hours, it's definitely stale - auto-clean
-        if ($lockAge -and $lockAge.TotalHours -gt 12) {
-            try { Remove-Item -LiteralPath $script:LockFile -Force } catch {}
-        } else {
-            Write-Host ""
-            Write-Host "  [!] Another instance of GTNH Updater may be running." -ForegroundColor DarkYellow
-            Write-Host "  Lock file: $($script:LockFile)" -ForegroundColor Gray
-            if ($lockContent) {
-                Write-Host "  Started: $($lockContent.Trim())" -ForegroundColor Gray
-            }
-            Write-Host ""
-            Write-Host "  If the previous run crashed, you can safely continue." -ForegroundColor Gray
-            Write-Host "  Continue? (y/n): " -NoNewline -ForegroundColor White
-            $lockResponse = (Read-Host).Trim()
-            if ($lockResponse -ne 'y' -and $lockResponse -ne 'Y') {
-                Write-Host "  Exiting." -ForegroundColor Gray
-                exit 0
-            }
-        }
-    }
-
-    # Create lock file with timestamp
-    Get-Date -Format 'yyyy-MM-dd HH:mm:ss' | Set-Content -LiteralPath $script:LockFile -Force
-    $script:WeCreatedLock = $true
-
     Invoke-MainLoop
 }
 catch {
@@ -156,8 +166,5 @@ catch {
     exit 1
 }
 finally {
-    # Remove lock file if we created it
-    if ($script:WeCreatedLock -and $script:LockFile -and (Test-Path -LiteralPath $script:LockFile)) {
-        try { Remove-Item -LiteralPath $script:LockFile -Force } catch {}
-    }
+    Remove-LockFile
 }

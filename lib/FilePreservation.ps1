@@ -78,6 +78,7 @@ function Invoke-PreserveFiles {
     }
 
     $failedItems = @()
+    $preservedCount = 0
 
     foreach ($item in $preserveList) {
         $sourcePath = Join-Path $InstancePath ($item -replace '[/\\]', [IO.Path]::DirectorySeparatorChar.ToString())
@@ -97,7 +98,7 @@ function Invoke-PreserveFiles {
                     Copy-Item -LiteralPath $sourcePath -Destination $destPath -Force
                 }
 
-                Write-Info "Preserved: $item"
+                $preservedCount++
                 Write-Log "[PRESERVE] Preserved: $item"
             }
             catch {
@@ -106,6 +107,10 @@ function Invoke-PreserveFiles {
                 $failedItems += $item
             }
         }
+    }
+
+    if ($preservedCount -gt 0) {
+        Write-Info "Preserved $preservedCount item(s)"
     }
 
     return $failedItems.Count -eq 0
@@ -135,6 +140,8 @@ function Invoke-RestoreFiles {
 
     $preserveList = $Target -eq 'server' ? (Get-ServerPreservationList) : (Get-ClientPreservationList)
 
+    $restoredCount = 0
+
     foreach ($item in $preserveList) {
         $sourcePath = Join-Path $TempDir ($item -replace '[/\\]', [IO.Path]::DirectorySeparatorChar.ToString())
         $destPath = Join-Path $InstancePath ($item -replace '[/\\]', [IO.Path]::DirectorySeparatorChar.ToString())
@@ -157,7 +164,7 @@ function Invoke-RestoreFiles {
                     Copy-Item -LiteralPath $sourcePath -Destination $destPath -Force
                 }
 
-                Write-Info "Restored: $item"
+                $restoredCount++
                 Write-Log "[RESTORE] Restored: $item"
             }
             catch {
@@ -165,5 +172,9 @@ function Invoke-RestoreFiles {
                 Write-Log "[ERROR] Restore failed for '$item': $($_.Exception.ToString())"
             }
         }
+    }
+
+    if ($restoredCount -gt 0) {
+        Write-Info "Restored $restoredCount item(s)"
     }
 }

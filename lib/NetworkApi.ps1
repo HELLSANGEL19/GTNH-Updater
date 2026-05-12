@@ -392,6 +392,15 @@ function Invoke-FileDownload {
                     $lastPercent = $percent
                 }
             }
+            elseif ($speedTimer.ElapsedMilliseconds -gt 500) {
+                # No Content-Length: show downloaded size + speed without percentage
+                $downloadedMB = [math]::Round($totalRead / 1MB, 1)
+                $speedMBs = [math]::Round(($speedBytes / 1MB) / ($speedTimer.ElapsedMilliseconds / 1000), 1)
+                $progressLine = "  Downloading... ${downloadedMB} MB  ${speedMBs} MB/s"
+                Write-Host "`r$($progressLine.PadRight(78))" -NoNewline -ForegroundColor Gray
+                $speedBytes = 0
+                $speedTimer.Restart()
+            }
         }
 
         Write-Host "`r$(' ' * 80)" # Clear the progress bar line
@@ -710,8 +719,11 @@ function Get-ScriptUpdateInfo {
         $base = if ($v -match '^(\d+\.\d+[\.\d]*)') { $Matches[1] } else { '0.0.0' }
         $parts = $base -split '\.' | ForEach-Object { [int]$_ }
         while ($parts.Count -lt 4) { $parts += 0 }
-        # Pre-release suffix lowers the version (beta < stable)
-        $pre = if ($v -match '-(alpha|beta|rc)') { 0 } else { 1 }
+        # Pre-release suffix lowers the version: alpha(1) < beta(2) < rc(3) < stable(4)
+        $pre = 4  # stable (no suffix)
+        if ($v -match '-alpha') { $pre = 1 }
+        elseif ($v -match '-beta') { $pre = 2 }
+        elseif ($v -match '-rc') { $pre = 3 }
         return $parts + $pre
     }
     $localParts  = & $parseVer $currentVer
@@ -806,10 +818,50 @@ function Get-LatestNightlyUpdater {
         $downloaded = Invoke-FileDownload -Url $asset.browser_download_url -OutPath $downloadPath -Description 'daily updater binary'
 
         if ($downloaded) {
-            # Rename/move to standard binary name
-            if ($downloadPath -ne $existingBinary) {
-                if (Test-Path -LiteralPath $existingBinary) { Remove-Item -LiteralPath $existingBinary -Force }
-                Move-Item -LiteralPath $downloadPath -Destination $existingBinary -Force
+            # Extract the zip to get the binary
+            try {
+                Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+                $extractDir = Join-Path $updaterDir 'extract-tmp'
+                if (Test-Path -LiteralPath $extractDir) { Remove-Item -LiteralPath $extractDir -Recurse -Force }
+                # Unblock the zip before extraction to prevent Zone.Identifier propagation
+                if ($IsWindows) {
+                    try { Unblock-File -LiteralPath $downloadPath -ErrorAction SilentlyContinue } catch {}
+                }
+                [System.IO.Compression.ZipFile]::ExtractToDirectory($downloadPath, $extractDir)
+                # Find the binary in the extracted folder
+                $extractedBinary = Get-ChildItem -LiteralPath $extractDir -Filter $binaryName -Recurse | Select-Object -First 1
+                if ($extractedBinary) {
+                    if (Test-Path -LiteralPath $existingBinary) { Remove-Item -LiteralPath $existingBinary -Force }
+                    Move-Item -LiteralPath $extractedBinary.FullName -Destination $existingBinary -Force
+                    # Unblock the file and create an external manifest to prevent
+                    # Windows from requiring elevation (SmartScreen heuristic detection
+                    # flags exe names containing "update"/"install"/"setup")
+                    if ($IsWindows) {
+                        try { Unblock-File -LiteralPath $existingBinary -ErrorAction SilentlyContinue } catch {}
+                        # External manifest tells Windows this exe does NOT need elevation
+                        $manifestPath = "${existingBinary}.manifest"
+                        $manifestContent = @'
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="asInvoker" uiAccess="false"/>
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+</assembly>
+'@
+                        try { Set-Content -LiteralPath $manifestPath -Value $manifestContent -Encoding UTF8 -Force } catch {}
+                    }
+                }
+                Remove-Item -LiteralPath $extractDir -Recurse -Force -ErrorAction SilentlyContinue
+                Remove-Item -LiteralPath $downloadPath -Force -ErrorAction SilentlyContinue
+            }
+            catch {
+                Write-Warn "Could not extract binary: $($_.Exception.Message)"
+                if ($existingBinaryExists) { return $existingBinary }
+                return $null
             }
             # Make executable on Linux/Mac
             if (-not $IsWindows) {

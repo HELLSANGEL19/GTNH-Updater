@@ -37,7 +37,12 @@ function Find-KeyInLines {
     $depth = 0  # brace nesting depth within the current section
 
     for ($i = 0; $i -lt $Lines.Count; $i++) {
-        if ($Lines[$i] -match '^\s*"?([^"{}=#]+)"?\s*\{') {
+        $line = $Lines[$i]
+
+        # Skip comment lines — they shouldn't affect section tracking or key matching
+        if ($line -match '^\s*[#/]') { continue }
+
+        if ($line -match '^\s*"?([^"{}=#]+)"?\s*\{') {
             $depth++
             # Only update section tracking at depth 1 (top-level sections)
             if ($depth -eq 1) {
@@ -47,7 +52,7 @@ function Find-KeyInLines {
                 }
             }
         }
-        elseif ($Lines[$i] -match '^\s*\}' -and -not [string]::IsNullOrEmpty($Section)) {
+        elseif ($line -match '^\s*\}' -and -not [string]::IsNullOrEmpty($Section)) {
             if ($depth -gt 0) { $depth-- }
             # Only reset section tracking when we close a top-level section
             if ($depth -eq 0) {
@@ -55,7 +60,7 @@ function Find-KeyInLines {
                 $currentSection = ''
             }
         }
-        if ($inTargetSection -and $Lines[$i] -match $pattern) {
+        if ($inTargetSection -and $line -match $pattern) {
             return $i
         }
     }
@@ -228,7 +233,7 @@ function Invoke-ConfigPatches {
         return
     }
 
-    Write-Step "Applying $($validPatches.Count) config patch(es) for $Target..."
+    Write-Info "Applying $($validPatches.Count) patch(es)..."
 
     foreach ($patch in $validPatches) {
         $patchParams = @{
@@ -713,6 +718,24 @@ function Invoke-ConfigPatchMenu {
                     continue
                 }
 
+                # Validate value matches the key's type prefix
+                $typeWarning = $null
+                if ($key -match '^B:' -and $value -notin @('true', 'false')) {
+                    $typeWarning = "Key has B: prefix (boolean) but value is '$value'. Expected 'true' or 'false'."
+                }
+                elseif ($key -match '^I:' -and $value -notmatch '^\-?\d+$') {
+                    $typeWarning = "Key has I: prefix (integer) but value is '$value'. Expected a whole number."
+                }
+                elseif ($key -match '^D:' -and $value -notmatch '^\-?\d+(\.\d+)?$') {
+                    $typeWarning = "Key has D: prefix (decimal) but value is '$value'. Expected a number."
+                }
+                if ($typeWarning) {
+                    Write-Warn $typeWarning
+                    if (-not (Confirm-Action "Use this value anyway?")) {
+                        continue
+                    }
+                }
+
                 Write-Info "Description (optional):"
                 $desc = Read-UserInput -Prompt 'Description'
 
@@ -1180,13 +1203,16 @@ function Invoke-ConfigPatchMenu {
 function Get-ConfigFileKeys {
     <#
     .SYNOPSIS
-        Parse a .cfg or .properties file into a flat hashtable of "section::key" => value.
+        Parse a .cfg or .properties file into a flat hashtable of "section.path::key" => value.
+    .DESCRIPTION
+        Tracks full section path for nested sections (e.g., "general.rendering")
+        to avoid key collisions when the same key name appears in different subsections.
     .PARAMETER FilePath
         Full path to the config file (used when Lines is not provided).
     .PARAMETER Lines
         Pre-read string array of lines (used when reading from a zip stream).
     .OUTPUTS
-        Hashtable where keys are "section::key" (section is empty string for .properties).
+        Hashtable where keys are "section.path::key" (section is empty string for .properties).
     #>
     param(
         [string]$FilePath,
@@ -1199,22 +1225,24 @@ function Get-ConfigFileKeys {
         catch { return $result }
     }
 
-    $currentSection = ''
-    $depth = 0
+    $sectionStack = @()
     foreach ($line in $Lines) {
+        if ($line -match '^\s*#') { continue }  # Skip comments
         if ($line -match '^\s*"?([^"{}=#]+)"?\s*\{') {
-            $depth++
-            if ($depth -eq 1) { $currentSection = $Matches[1].Trim() }
+            $sectionStack += $Matches[1].Trim()
         }
         elseif ($line -match '^\s*\}') {
-            if ($depth -gt 0) { $depth-- }
-            if ($depth -eq 0) { $currentSection = '' }
+            if ($sectionStack.Count -gt 0) {
+                $sectionStack = @($sectionStack | Select-Object -SkipLast 1)
+            }
         }
         elseif ($line -match '^\s*([BISD]:[^=]+?)\s*=\s*(.*)$') {
-            $result["${currentSection}::$($Matches[1].Trim())"] = $Matches[2].Trim()
+            $sectionPath = $sectionStack -join '.'
+            $result["${sectionPath}::$($Matches[1].Trim())"] = $Matches[2].Trim()
         }
-        elseif ($line -match '^\s*([a-zA-Z][\w\-\.]*)\s*=\s*(.*)$' -and $line -notmatch '^\s*#') {
-            $result["${currentSection}::$($Matches[1].Trim())"] = $Matches[2].Trim()
+        elseif ($line -match '^\s*([a-zA-Z][\w\-\.]*)\s*=\s*(.*)$') {
+            $sectionPath = $sectionStack -join '.'
+            $result["${sectionPath}::$($Matches[1].Trim())"] = $Matches[2].Trim()
         }
     }
     return $result
@@ -1239,8 +1267,11 @@ function Get-ConfigKeysFromZip {
         $zip = [System.IO.Compression.ZipFile]::OpenRead($ZipPath)
         foreach ($entry in $zip.Entries) {
             if ($entry.FullName -notmatch '(?:^|/)config/.*\.(cfg|properties)$') { continue }
-            # Normalise to "config/relative/path.cfg" (strip any leading folder)
-            $relPath = $entry.FullName -replace '^[^/]+/(?=config/)', '' -replace '^[^/]+/\.minecraft/(?=config/)', ''
+            # Normalise to "config/relative/path.cfg" (strip any leading folders)
+            # Handles single-nested (folder/config/...) and double-nested (folder/folder/config/...)
+            $relPath = $entry.FullName -replace '^(.+/)?(?=config/)', ''
+            # Also handle .minecraft wrapper: folder/.minecraft/config/...
+            $relPath = $relPath -replace '^\.minecraft/', ''
             if ($relPath -notmatch '^config/') { continue }
             try {
                 $stream = $entry.Open()
@@ -1347,9 +1378,11 @@ function Invoke-ConfigDiffDetection {
             $section = $compositeKey.Substring(0, $sepIdx)
             $key     = $compositeKey.Substring($sepIdx + 2)
 
-            # Skip version-tracking keys — these are pack-managed and change every release
+            # Skip version-tracking keys -- these are pack-managed and change every release
             $bareKey = $key -replace '^[BISD]:', ''
-            if ($bareKey -match '(?i)^(version|modVersion|lastVersion|configVersion|schemaVersion)$') { continue }
+            if ($bareKey -match '(?i)^(version|modVersion|lastVersion|configVersion|schemaVersion|config_version|lastRunVersion|hasShownUpdateNotice|version_seen|firstLaunch|lastKnownVersion)$') { continue }
+            # Also skip keys that contain common version/tracking patterns
+            if ($bareKey -match '(?i)(Version$|_version$|\.version$|LastRun|FirstLaunch|UpdateNotice)') { continue }
 
             if ($alreadyPatched.ContainsKey("${configRelPath}::${section}::${key}")) {
                 $skippedCount++

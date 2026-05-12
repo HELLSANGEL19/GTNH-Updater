@@ -271,13 +271,147 @@ function Write-BackupWarning {
     Write-Host "  ╚══════════════════════════════════════════════════════════════╝" -ForegroundColor $color
 }
 
+function Show-UpdatePlan {
+    <#
+    .SYNOPSIS
+        Display a summary box of what the update will do, then confirm.
+    .DESCRIPTION
+        Shows version change, target, instance path, and steps at a glance.
+        Returns $true if user confirms, $false if they cancel.
+    .PARAMETER Config
+        The config PSCustomObject.
+    .PARAMETER Target
+        'server' or 'client'.
+    .PARAMETER Version
+        The version being installed (e.g., '2.8.5' or '2.9.0-nightly-2026-05-11').
+    .PARAMETER Channel
+        The update channel: 'stable', 'daily', 'experimental'.
+    .PARAMETER InstancePath
+        The instance path being updated.
+    .OUTPUTS
+        $true if user confirms, $false if cancelled.
+    #>
+    param(
+        [Parameter(Mandatory)][PSCustomObject]$Config,
+        [Parameter(Mandatory)][string]$Target,
+        [Parameter(Mandatory)][string]$Version,
+        [Parameter(Mandatory)][string]$Channel,
+        [Parameter(Mandatory)][string]$InstancePath
+    )
+
+    $currentVer = $Target -eq 'server' ? ($Config.InstalledServerVersion ?? '?') : ($Config.InstalledClientVersion ?? '?')
+    $backupLabel = $Config.BackupEnabled ? 'Full backup (auto)' : 'Rollback snapshot only'
+    $patchCount = @($Config.ConfigPatches | Where-Object { $_.Target -eq $Target -or $_.Target -eq 'both' }).Count
+    $customModCount = $Target -eq 'server' ? ($Config.CustomServerMods ?? @()).Count : ($Config.CustomClientMods ?? @()).Count
+
+    # Shorten instance path for display if too long
+    $displayPath = $InstancePath
+    if ($displayPath.Length -gt 50) {
+        $displayPath = '...' + $displayPath.Substring($displayPath.Length - 47)
+    }
+
+    # Build all content lines first to calculate the box width
+    $versionLine = "Version:  $currentVer  ->  $Version"
+    $channelLine = "Channel:  $Channel"
+    $targetLine  = "Target:   $Target"
+    $instanceLine = "Instance: $displayPath"
+
+    $stepLines = @()
+    if ($Channel -eq 'stable') {
+        $stepLines += "  1. Download + extract pack"
+        $stepLines += "  2. $backupLabel"
+        $stepLines += "  3. Replace pack files"
+        $stepLines += "  4. Restore preserved files"
+    } else {
+        $stepLines += "  1. $backupLabel"
+        $stepLines += "  2. Run $Channel updater"
+        $stepLines += "  3. Restore preserved files"
+    }
+    if ($customModCount -gt 0) { $stepLines += "  +  Restore $customModCount custom mod(s)" }
+    if ($patchCount -gt 0) { $stepLines += "  +  Apply $patchCount config patch(es)" }
+
+    $warnLines = @()
+    if ($Target -eq 'server') { $warnLines += "[!] Make sure the server is stopped." }
+    if (-not $Config.BackupEnabled) {
+        $warnLines += "[!] Full backup is off. Only a rollback snapshot will be saved."
+        $warnLines += "    Enable in Settings > Backups and Cache."
+    }
+
+    # Calculate box width (minimum 56, expand if content is wider)
+    $allContentLengths = @($versionLine.Length, $channelLine.Length, $targetLine.Length, $instanceLine.Length)
+    $allContentLengths += $stepLines | ForEach-Object { $_.Length }
+    $allContentLengths += $warnLines | ForEach-Object { $_.Length }
+    $innerWidth = [math]::Max(56, ($allContentLengths | Measure-Object -Maximum).Maximum + 2)
+
+    # Helper to pad a line to fill the box
+    $pad = { param($text, $len) $text + (' ' * [math]::Max(1, $innerWidth - $len)) }
+
+    # Draw the box
+    $border = '─' * ($innerWidth + 2)
+    Write-Host ""
+    Write-Host "  ┌${border}┐" -ForegroundColor DarkGray
+    $headerText = "Update Plan"
+    Write-Host "  │  " -NoNewline -ForegroundColor DarkGray
+    Write-Host "$headerText" -NoNewline -ForegroundColor Cyan
+    Write-Host "$(' ' * ($innerWidth - $headerText.Length))│" -ForegroundColor DarkGray
+    Write-Host "  ├${border}┤" -ForegroundColor DarkGray
+
+    # Version line (with colors)
+    Write-Host "  │  Version:  " -NoNewline -ForegroundColor DarkGray
+    Write-Host "$currentVer" -NoNewline -ForegroundColor Yellow
+    Write-Host "  ->  " -NoNewline -ForegroundColor DarkGray
+    Write-Host "$Version" -NoNewline -ForegroundColor Green
+    Write-Host "$(' ' * [math]::Max(1, $innerWidth - $versionLine.Length))│" -ForegroundColor DarkGray
+
+    # Channel
+    $channelColor = $Channel -eq 'stable' ? 'Cyan' : 'Magenta'
+    Write-Host "  │  Channel:  " -NoNewline -ForegroundColor DarkGray
+    Write-Host "$Channel" -NoNewline -ForegroundColor $channelColor
+    Write-Host "$(' ' * [math]::Max(1, $innerWidth - $channelLine.Length))│" -ForegroundColor DarkGray
+
+    # Target
+    Write-Host "  │  Target:   " -NoNewline -ForegroundColor DarkGray
+    Write-Host "$Target" -NoNewline -ForegroundColor White
+    Write-Host "$(' ' * [math]::Max(1, $innerWidth - $targetLine.Length))│" -ForegroundColor DarkGray
+
+    # Instance path
+    Write-Host "  │  Instance: " -NoNewline -ForegroundColor DarkGray
+    Write-Host "$displayPath" -NoNewline -ForegroundColor Gray
+    Write-Host "$(' ' * [math]::Max(1, $innerWidth - $instanceLine.Length))│" -ForegroundColor DarkGray
+
+    # Blank line
+    Write-Host "  │$(' ' * ($innerWidth + 2))│" -ForegroundColor DarkGray
+
+    # Steps
+    Write-Host "  │  Steps:" -NoNewline -ForegroundColor DarkGray
+    Write-Host "$(' ' * ($innerWidth - 6))│" -ForegroundColor DarkGray
+    foreach ($step in $stepLines) {
+        Write-Host "  │  $step" -NoNewline -ForegroundColor Gray
+        Write-Host "$(' ' * [math]::Max(1, $innerWidth - $step.Length))│" -ForegroundColor DarkGray
+    }
+
+    # Blank line before warnings
+    if ($warnLines.Count -gt 0) {
+        Write-Host "  │$(' ' * ($innerWidth + 2))│" -ForegroundColor DarkGray
+        foreach ($warn in $warnLines) {
+            Write-Host "  │  " -NoNewline -ForegroundColor DarkGray
+            Write-Host "$warn" -NoNewline -ForegroundColor DarkYellow
+            Write-Host "$(' ' * [math]::Max(1, $innerWidth - $warn.Length))│" -ForegroundColor DarkGray
+        }
+    }
+
+    Write-Host "  └${border}┘" -ForegroundColor DarkGray
+
+    return (Confirm-Action "Proceed?")
+}
+
 function Open-FolderInFileManager {
     <#
     .SYNOPSIS
         Open a folder in the system file manager (cross-platform).
     .DESCRIPTION
         On Windows: uses explorer.exe.
-        On Linux: uses xdg-open.
+        On Linux: uses xdg-open (requires a display server).
     .PARAMETER Path
         The folder path to open.
     #>
@@ -289,6 +423,11 @@ function Open-FolderInFileManager {
         Start-Process explorer.exe -ArgumentList "`"$Path`""
     }
     else {
+        # Check for a display server (headless servers won't have one)
+        if (-not $env:DISPLAY -and -not $env:WAYLAND_DISPLAY) {
+            throw "No display server detected (headless). Path: $Path"
+        }
+
         # Linux: use xdg-open (available on most desktop environments)
         try {
             Start-Process 'xdg-open' -ArgumentList @($Path)

@@ -1,1 +1,1 @@
-$script:UpdaterVersion = '0.3.1-beta'
+$script:UpdaterVersion = '0.4.0-beta'

@@ -1,4 +1,4 @@
-# ============================================================================
+﻿# ============================================================================
 # Group 5: Setup Wizard - First-run interactive configuration
 # ============================================================================
 # Functions:
@@ -17,26 +17,162 @@
 # Steps 3/4 are skipped based on the user's answer in step 2.
 # ============================================================================
 
-function Test-GtnhPath {
+function Resolve-InstancePath {
     <#
     .SYNOPSIS
-        Validate a path looks like a GTNH instance and warn if not.
+        Resolve a user-provided path to the actual game root directory.
+    .DESCRIPTION
+        Users often paste a parent directory instead of the actual game root.
+        This function checks if the given path directly contains mods/ (game root).
+        If not, it searches common child folder names for the game root:
+          - .minecraft (Prism/MultiMC/PolyMC client instances)
+          - minecraft (some setups)
+          - Minecraft (AMP and other server panels)
+          - server (common standalone naming)
+        Returns the resolved path if found, or the original path if it already
+        looks correct or no child match is found.
     .PARAMETER Path
-        The path to check.
+        The user-provided path.
     .PARAMETER Target
-        'server' or 'client' - affects what we look for.
+        'server' or 'client' - affects which child folders to prioritize.
     .OUTPUTS
-        $true if the path looks valid or the user confirms anyway.
+        PSCustomObject with ResolvedPath and WasResolved boolean.
     #>
     param(
         [Parameter(Mandatory)][string]$Path,
         [Parameter(Mandatory)][ValidateSet('server', 'client')][string]$Target
     )
 
+    # If the path directly has mods/, it's already the game root
+    $modsDir = Join-Path $Path 'mods'
+    if (Test-Path -LiteralPath $modsDir) {
+        return [PSCustomObject]@{ ResolvedPath = $Path; WasResolved = $false }
+    }
+
+    # Common child folder names that might be the actual game root
+    # Ordered by likelihood per target type
+    $childCandidates = if ($Target -eq 'client') {
+        @('.minecraft', 'minecraft', '.minecraft64', 'Minecraft')
+    }
+    else {
+        @('Minecraft', 'minecraft', 'server', 'Server', '.minecraft')
+    }
+
+    foreach ($child in $childCandidates) {
+        $candidatePath = Join-Path $Path $child
+        if (Test-Path -LiteralPath $candidatePath) {
+            $candidateMods = Join-Path $candidatePath 'mods'
+            if (Test-Path -LiteralPath $candidateMods) {
+                return [PSCustomObject]@{ ResolvedPath = $candidatePath; WasResolved = $true }
+            }
+        }
+    }
+
+    # No child match found - also try one level deeper for nested structures
+    # (e.g., AMP: Instances/GTNH01/Minecraft/ where user pastes Instances/GTNH01/)
+    try {
+        $subDirs = Get-ChildItem -LiteralPath $Path -Directory -ErrorAction SilentlyContinue | Select-Object -First 20
+        foreach ($dir in $subDirs) {
+            $subMods = Join-Path $dir.FullName 'mods'
+            if (Test-Path -LiteralPath $subMods) {
+                # Verify it looks like a game directory (has config/ too, not just a random mods/ folder)
+                $subConfig = Join-Path $dir.FullName 'config'
+                if (Test-Path -LiteralPath $subConfig) {
+                    return [PSCustomObject]@{ ResolvedPath = $dir.FullName; WasResolved = $true }
+                }
+            }
+        }
+    }
+    catch {
+        # Access denied or other error scanning children - just return original
+    }
+
+    # Return original path unchanged
+    return [PSCustomObject]@{ ResolvedPath = $Path; WasResolved = $false }
+}
+
+function Test-JavaBinary {
+    <#
+    .SYNOPSIS
+        Validate that a path points to an actual Java binary.
+    .DESCRIPTION
+        Checks that the file exists, has the expected name (java or java.exe),
+        and responds to -version. Returns $true if valid, $false otherwise.
+    .PARAMETER Path
+        The file path to validate.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Path
+    )
+
+    if (-not (Test-Path -LiteralPath $Path)) { return $false }
+
+    # Check it's a file, not a directory
+    if ((Get-Item -LiteralPath $Path).PSIsContainer) {
+        Write-Warn "Path is a directory, not a file. Point to the java binary itself."
+        return $false
+    }
+
+    # Check filename looks like java
+    $fileName = Split-Path -Leaf $Path
+    $validNames = @('java', 'java.exe')
+    if ($fileName.ToLower() -notin $validNames) {
+        Write-Warn "File is '$fileName' - expected 'java' or 'java.exe'."
+        return (Confirm-Action "Use this path anyway?")
+    }
+
+    # Try running java -version to verify it works
+    try {
+        $proc = Start-Process -FilePath $Path -ArgumentList '-version' -Wait -PassThru -NoNewWindow `
+            -RedirectStandardError ([System.IO.Path]::GetTempFileName()) -ErrorAction Stop
+        if ($proc.ExitCode -eq 0) {
+            return $true
+        }
+        Write-Warn "Java at this path returned exit code $($proc.ExitCode)."
+        return (Confirm-Action "Use this path anyway?")
+    }
+    catch {
+        Write-Warn "Could not execute Java at this path: $($_.Exception.Message)"
+        return (Confirm-Action "Use this path anyway?")
+    }
+}
+
+function Test-GtnhPath {
+    <#
+    .SYNOPSIS
+        Validate a path looks like a GTNH instance, auto-resolving if needed.
+    .DESCRIPTION
+        First tries to resolve the path to the actual game root (in case the user
+        pasted a parent directory). Then validates the resolved path has the expected
+        structure. Returns the resolved path via [ref] if it was auto-corrected.
+    .PARAMETER Path
+        The path to check (passed by reference so it can be updated if resolved).
+    .PARAMETER Target
+        'server' or 'client' - affects what we look for.
+    .OUTPUTS
+        $true if the path looks valid or the user confirms anyway.
+        The $Path variable is updated in-place if auto-resolved.
+    #>
+    param(
+        [Parameter(Mandatory)][ref]$Path,
+        [Parameter(Mandatory)][ValidateSet('server', 'client')][string]$Target
+    )
+
+    $inputPath = $Path.Value
+
+    # Try to resolve to the actual game root
+    $resolved = Resolve-InstancePath -Path $inputPath -Target $Target
+    if ($resolved.WasResolved) {
+        Write-Info "Auto-detected game root: $($resolved.ResolvedPath)"
+        Write-Info "  (resolved from: $inputPath)"
+        $Path.Value = $resolved.ResolvedPath
+        $inputPath = $resolved.ResolvedPath
+    }
+
     $issues = @()
 
     # Check for mods/ folder
-    $modsPath = Join-Path $Path 'mods'
+    $modsPath = Join-Path $inputPath 'mods'
     if (-not (Test-Path -LiteralPath $modsPath)) {
         $issues += "No mods/ folder found"
     } else {
@@ -47,14 +183,14 @@ function Test-GtnhPath {
     }
 
     # Check for config/ folder
-    $configPath = Join-Path $Path 'config'
+    $configPath = Join-Path $inputPath 'config'
     if (-not (Test-Path -LiteralPath $configPath)) {
         $issues += "No config/ folder found"
     }
 
     # Server-specific checks
     if ($Target -eq 'server') {
-        $serverProps = Join-Path $Path 'server.properties'
+        $serverProps = Join-Path $inputPath 'server.properties'
         if (-not (Test-Path -LiteralPath $serverProps)) {
             $issues += "No server.properties found"
         }
@@ -118,6 +254,7 @@ function Invoke-InteractiveSetup {
             Write-MenuOption "$($i + 1)" $label
         }
         Write-MenuOption "M" "Enter path manually"
+        Write-MenuOption "S" "Skip"
 
         $javaBinaryName = if ($IsWindows) { 'java.exe' } else { 'java' }
         $defaultHint = $recommendedIdx -ge 0 ? " [default: $($recommendedIdx + 1)]" : ""
@@ -127,6 +264,9 @@ function Invoke-InteractiveSetup {
         if ([string]::IsNullOrEmpty($javaChoice) -and $recommendedIdx -ge 0) {
             $config.JavaPath = $javaInstalls[$recommendedIdx].Path
         }
+        elseif ($javaChoice -eq 'S' -or $javaChoice -eq 's') {
+            Write-Info "Java configuration skipped."
+        }
         elseif ($javaChoice -eq 'M' -or $javaChoice -eq 'm') {
             $javaPrompt = if ($IsWindows) { "Enter the full path to java.exe (not javaw.exe)" } else { "Enter the full path to the java binary" }
             $javaPath = Read-UserInput $javaPrompt
@@ -135,7 +275,11 @@ function Invoke-InteractiveSetup {
                 $javaPath = Read-UserInput $javaPrompt
             }
             if ($javaPath) {
-                $config.JavaPath = $javaPath
+                if (Test-JavaBinary -Path $javaPath) {
+                    $config.JavaPath = $javaPath
+                } else {
+                    Write-Info "Java path not set."
+                }
             }
         }
         else {
@@ -159,7 +303,11 @@ function Invoke-InteractiveSetup {
                 $javaPath = Read-UserInput $javaPrompt2
             }
             if ($javaPath) {
-                $config.JavaPath = $javaPath
+                if (Test-JavaBinary -Path $javaPath) {
+                    $config.JavaPath = $javaPath
+                } else {
+                    Write-Info "Java path not set."
+                }
             }
         }
     }
@@ -184,6 +332,7 @@ function Invoke-InteractiveSetup {
 
     # Default to both if invalid input
     if (-not $wantServer -and -not $wantClient) {
+        Write-Info "Defaulting to both server and client."
         $wantServer = $true
         $wantClient = $true
     }
@@ -218,7 +367,7 @@ function Invoke-InteractiveSetup {
                 Write-Warn "Path not found: $serverPath"
                 $serverPath = Read-UserInput "Enter the full path to your GTNH server root folder"
             }
-            if ($serverPath -and (Test-GtnhPath -Path $serverPath -Target 'server')) {
+            if ($serverPath -and (Test-GtnhPath -Path ([ref]$serverPath) -Target 'server')) {
                 $config.ServerPath = $serverPath
             }
         }
@@ -245,7 +394,7 @@ function Invoke-InteractiveSetup {
                 Write-Warn "Path not found: $serverPath"
                 $serverPath = Read-UserInput "Enter the full path to your GTNH server root folder"
             }
-            if ($serverPath -and (Test-GtnhPath -Path $serverPath -Target 'server')) {
+            if ($serverPath -and (Test-GtnhPath -Path ([ref]$serverPath) -Target 'server')) {
                 $config.ServerPath = $serverPath
             }
         }
@@ -289,7 +438,7 @@ function Invoke-InteractiveSetup {
                 Write-Warn "Path not found: $clientPath"
                 $clientPath = Read-UserInput "Enter the full path to your GTNH .minecraft folder"
             }
-            if ($clientPath -and (Test-GtnhPath -Path $clientPath -Target 'client')) {
+            if ($clientPath -and (Test-GtnhPath -Path ([ref]$clientPath) -Target 'client')) {
                 $config.ClientInstancePath = $clientPath
             }
         }
@@ -316,7 +465,7 @@ function Invoke-InteractiveSetup {
                 Write-Warn "Path not found: $clientPath"
                 $clientPath = Read-UserInput "Enter the full path to your GTNH .minecraft folder"
             }
-            if ($clientPath -and (Test-GtnhPath -Path $clientPath -Target 'client')) {
+            if ($clientPath -and (Test-GtnhPath -Path ([ref]$clientPath) -Target 'client')) {
                 $config.ClientInstancePath = $clientPath
             }
         }
@@ -671,7 +820,7 @@ function Invoke-InteractiveSetup {
         Save-Config -Config $config
         Write-Success "Configuration saved."
 
-        # Offer to set up a second profile — only when there's currently just one
+        # Offer to set up a second profile â€” only when there's currently just one
         $existingProfiles = Get-ProfileList
         if ($existingProfiles.Count -eq 1) {
             Write-Host ""
@@ -691,3 +840,5 @@ function Invoke-InteractiveSetup {
 
     return $config
 }
+
+

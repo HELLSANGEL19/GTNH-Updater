@@ -201,7 +201,8 @@ function Invoke-StableUpdate {
                 }
             }
         } catch {
-            # Version parsing failed, skip downgrade check
+            # Version parsing failed - log it but don't block the update
+            Write-Log "[WARN] Version comparison failed: $($_.Exception.Message) (installed=$installedVersion, target=$latestVersion)"
         }
 
         if ($isOlderVersion) {
@@ -237,11 +238,9 @@ function Invoke-StableUpdate {
         }
     }
 
-    # ── Backup warning: shown before any download starts ─────────────────────
-    Write-Host ""
-    Write-BackupWarning -Target $Target
-    Write-Host ""
-    if (-not (Confirm-Action "Instance is backed up and server is stopped. Continue?")) {
+    # ── Pre-update confirmation: show update plan ──────────────────────────────
+    $confirmed = Show-UpdatePlan -Config $Config -Target $Target -Version $latestVersion -Channel $ChannelLabel -InstancePath $instancePath
+    if (-not $confirmed) {
         Write-Info "Update cancelled."
         return
     }
@@ -267,10 +266,18 @@ function Invoke-StableUpdate {
 
     # Pre-flight disk space check (GTNH zips are typically 400-500 MB)
     try {
-        $driveRoot = [System.IO.Path]::GetPathRoot($tempDir)
-        $freeSpaceGB = [math]::Round(([System.IO.DriveInfo]::new($driveRoot)).AvailableFreeSpace / 1GB, 2)
-        if ($freeSpaceGB -lt 1.5) {
-            Write-Warn "Low disk space: ${freeSpaceGB} GB free on $driveRoot (need ~1.5 GB for download + extraction)"
+        $freeSpaceGB = $null
+        if ($IsWindows) {
+            $driveRoot = [System.IO.Path]::GetPathRoot($tempDir)
+            $freeSpaceGB = [math]::Round(([System.IO.DriveInfo]::new($driveRoot)).AvailableFreeSpace / 1GB, 2)
+        } else {
+            $dfOutput = df -B1 $tempDir 2>/dev/null | Select-Object -Last 1
+            if ($dfOutput -match '\s(\d+)\s+\d+%\s') {
+                $freeSpaceGB = [math]::Round([long]$Matches[1] / 1GB, 2)
+            }
+        }
+        if ($freeSpaceGB -and $freeSpaceGB -lt 1.5) {
+            Write-Warn "Low disk space: ${freeSpaceGB} GB free (need ~1.5 GB for download + extraction)"
             if (-not (Confirm-Action "Continue anyway?")) {
                 Write-Info "Update cancelled."
                 return
@@ -800,7 +807,7 @@ function Invoke-StableUpdate {
     # ── APPLY UPDATE ──────────────────────────────────────────────────────────
     Write-Header "Applying Update"
 
-    $totalSteps = 7
+    $totalSteps = 9
     $customModsToRestore = $savedCustomMods
 
     # ── Backup custom mods to temp ────────────────────────────────────────────
@@ -943,7 +950,7 @@ function Invoke-StableUpdate {
         }
     }
     # ── Script-level backup (if enabled) ──────────────────────────────────────
-    $backupOk = Invoke-ScriptBackup -Config $Config -InstancePath $instancePath -Target $Target
+    $backupOk = Invoke-FullInstanceBackup -Config $Config -InstancePath $instancePath -Target $Target -Silent
     if ($backupOk -eq $false) {
         Write-Err "Backup failed. Update cancelled for safety."
         Write-Info "Fix the backup issue or disable backups in Settings, then try again."
@@ -954,10 +961,11 @@ function Invoke-StableUpdate {
     }
 
     # ── POINT OF NO RETURN ────────────────────────────────────────────────────
-    # Save a rollback snapshot so we can recover if the update fails mid-way
+    # Always save a lightweight rollback snapshot for quick recovery on failure.
+    # This is fast and small (just the folders being deleted), so always worth doing.
     $rollbackDir = Save-RollbackSnapshot -InstancePath $instancePath -Target $Target
     if (-not $rollbackDir) {
-        Write-Warn "Could not save rollback snapshot. If the update fails, you will need your backup."
+        Write-Warn "Could not save rollback snapshot. If the update fails, you will need to restore manually."
         if (-not (Confirm-Action "Continue without rollback safety net?")) {
             Write-Info "Update cancelled."
             # Clean up temp dirs
@@ -1035,12 +1043,12 @@ function Invoke-StableUpdate {
         Invoke-ConfigPatches -Config $Config -InstancePath $instancePath -Target $Target
 
         # ── Run verification ──────────────────────────────────────────────────
-        Write-Step "Running verification..."
+        Write-Step "Step 8/$totalSteps`: Running verification..."
 
         Invoke-Verification -InstancePath $instancePath -Target $Target
 
         # ── Record history, update installed version ──────────────────────────
-        Write-Step "Recording update..."
+        Write-Step "Step 9/$totalSteps`: Recording update..."
 
         $historyDetails = "+$($added.Count) -$($removed.Count) ~$($updated.Count)"
         Add-UpdateHistoryEntry -Config $Config -Version $latestVersion -Channel $ChannelLabel -Target $Target -Details $historyDetails
@@ -1055,19 +1063,17 @@ function Invoke-StableUpdate {
         $updateSucceeded = $true
 
         Write-Host ""
-        Write-Success "$($ChannelLabel.Substring(0,1).ToUpper() + $ChannelLabel.Substring(1)) update complete! $Target updated to v$latestVersion."
+        Write-Host "  ╔══════════════════════════════════════════════════════════════╗" -ForegroundColor Green
+        Write-Host "  ║  Update complete!                                           ║" -ForegroundColor Green
+        Write-Host "  ╚══════════════════════════════════════════════════════════════╝" -ForegroundColor Green
+        Write-Host ""
+        Write-Host "  $Target updated to " -NoNewline -ForegroundColor Gray
+        Write-Host "v$latestVersion" -ForegroundColor Green
+        Write-Host "  Channel: $ChannelLabel" -ForegroundColor Gray
         Write-Host ""
         $openLabel = if ($IsWindows) { "Open $Target folder in Explorer" } else { "Open $Target folder in file manager" }
         Write-MenuOption "O" $openLabel
-        Write-MenuOption "Enter" "Continue"
-        $postChoice = Read-MenuChoice "Choose"
-        if ($postChoice -eq 'O' -or $postChoice -eq 'o') {
-            try { Open-FolderInFileManager -Path $instancePath } catch { Write-Warn "Could not open folder: $($_.Exception.Message)" }
-        }
-        Write-Host ""
-        $openLabel = if ($IsWindows) { "Open $Target folder in Explorer" } else { "Open $Target folder in file manager" }
-        Write-MenuOption "O" $openLabel
-        Write-MenuOption "Enter" "Continue"
+        Write-MenuOption "Enter" "Return to main menu"
         $postChoice = Read-MenuChoice "Choose"
         if ($postChoice -eq 'O' -or $postChoice -eq 'o') {
             try { Open-FolderInFileManager -Path $instancePath } catch { Write-Warn "Could not open folder: $($_.Exception.Message)" }
@@ -1162,51 +1168,68 @@ function Move-StagingToInstance {
     }
 
     # Determine the actual content root within staging
+    # Handles single-nested (common) and double-nested (rare, some zip tools) structures
     $contentRoot = $StagingDir
-    $topItems = Get-ChildItem -LiteralPath $StagingDir
-    if ($topItems.Count -eq 1 -and $topItems[0].PSIsContainer) {
-        # Single root folder in staging - check if it contains pack content
+    $maxDepth = 3  # Safety limit to prevent infinite loops on weird zips
+    for ($flattenPass = 0; $flattenPass -lt $maxDepth; $flattenPass++) {
+        $topItems = Get-ChildItem -LiteralPath $contentRoot
+        if ($topItems.Count -ne 1 -or -not $topItems[0].PSIsContainer) { break }
+
+        # Single folder - check if it contains pack content
         $singleDir = $topItems[0].FullName
         $hasPackContent = (Test-Path -LiteralPath (Join-Path $singleDir 'mods')) -or
                           (Test-Path -LiteralPath (Join-Path $singleDir 'config')) -or
                           (Test-Path -LiteralPath (Join-Path $singleDir '.minecraft'))
         if ($hasPackContent) {
             $contentRoot = $singleDir
-            Write-Info "  Staging has root folder: $($topItems[0].Name) - flattening."
-        }
-
-        # For client zips, the content might be inside a .minecraft subfolder
-        $dotMinecraft = Join-Path $contentRoot '.minecraft'
-        if (Test-Path -LiteralPath $dotMinecraft) {
-            # Move instance-root items to parent of DestinationPath
-            $instanceRoot = Split-Path -Parent $DestinationPath
-
-            if ($JavaVersion -eq 'java17') {
-                foreach ($item in $script:ClientJava17InstanceRootItems) {
-                    $srcItem = Join-Path $contentRoot $item
-                    if (Test-Path -LiteralPath $srcItem) {
-                        $destItem = Join-Path $instanceRoot $item
-                        if (Test-Path -LiteralPath $destItem) {
-                            Remove-Item -LiteralPath $destItem -Recurse -Force
-                        }
-                        Move-Item -LiteralPath $srcItem -Destination $destItem -Force
-                        Write-Info "  Moved to instance root: $item"
-                    }
-                }
-            }
-
-            # Use .minecraft as the content root for the destination
-            $contentRoot = $dotMinecraft
+            Write-Info "  Flattening wrapper folder: $($topItems[0].Name)"
+        } else {
+            break  # Single folder but no pack content - stop
         }
     }
 
+    # For client zips, the content might be inside a .minecraft subfolder
+    $dotMinecraft = Join-Path $contentRoot '.minecraft'
+    if (Test-Path -LiteralPath $dotMinecraft) {
+        # Move instance-root items to parent of DestinationPath
+        $instanceRoot = Split-Path -Parent $DestinationPath
+
+        if ($JavaVersion -eq 'java17') {
+            foreach ($item in $script:ClientJava17InstanceRootItems) {
+                $srcItem = Join-Path $contentRoot $item
+                if (Test-Path -LiteralPath $srcItem) {
+                    $destItem = Join-Path $instanceRoot $item
+                    if (Test-Path -LiteralPath $destItem) {
+                        Remove-Item -LiteralPath $destItem -Recurse -Force
+                    }
+                    Move-Item -LiteralPath $srcItem -Destination $destItem -Force
+                    Write-Info "  Moved to instance root: $item"
+                }
+            }
+        }
+
+        # Use .minecraft as the content root for the destination
+        $contentRoot = $dotMinecraft
+    }
+
     # Move content root items into destination
+    $moveErrors = @()
     Get-ChildItem -LiteralPath $contentRoot | ForEach-Object {
         $destPath = Join-Path $DestinationPath $_.Name
-        if (Test-Path -LiteralPath $destPath) {
-            Remove-Item -LiteralPath $destPath -Recurse -Force
+        try {
+            if (Test-Path -LiteralPath $destPath) {
+                Remove-Item -LiteralPath $destPath -Recurse -Force
+            }
+            Move-Item -LiteralPath $_.FullName -Destination $destPath -Force -ErrorAction Stop
         }
-        Move-Item -LiteralPath $_.FullName -Destination $destPath -Force
+        catch {
+            $moveErrors += $_.Name
+            Write-Log "[ERROR] Failed to move '$($_.Name)': $($_.Exception.Message)"
+        }
+    }
+    if ($moveErrors.Count -gt 0) {
+        Write-Warn "$($moveErrors.Count) item(s) failed to move: $($moveErrors -join ', ')"
+        throw "Pack installation incomplete - $($moveErrors.Count) item(s) failed to move."
     }
 
     Write-Success "Pack installed to: $DestinationPath"

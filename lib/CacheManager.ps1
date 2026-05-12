@@ -79,7 +79,7 @@ function Invoke-StartupCleanup {
         Removes:
         - Stale staging folders (staging-*/) from cancelled or failed updates
         - Old nightly updater JARs (keeps only the newest)
-        - Orphaned rollback snapshots in .temp/
+        - Orphaned temp subdirectories (NOT rollback snapshots - those are handled by the main loop)
         Runs silently during startup to prevent disk space accumulation.
     #>
 
@@ -140,8 +140,11 @@ function Invoke-StartupCleanup {
     # cleaned up there after the user is notified).
     $tempDir = $script:TempDir
     if ($tempDir -and (Test-Path -LiteralPath $tempDir)) {
-        # Clean orphaned preserved/, custom-mods/, nightly-custom-mods/ dirs
-        $orphanedDirs = @('preserved', 'custom-mods', 'nightly-custom-mods')
+        # Clean orphaned temp dirs (but NOT rollback-* dirs —
+        # those may contain user data from a crashed update and are handled separately)
+        $orphanedDirs = @('preserved', 'custom-mods', 'nightly-custom-mods',
+            'custom-mods-nightly-server', 'custom-mods-nightly-client',
+            'preserved-nightly-server', 'preserved-nightly-client')
         foreach ($dirName in $orphanedDirs) {
             $orphanPath = Join-Path $tempDir $dirName
             if (Test-Path -LiteralPath $orphanPath) {
@@ -158,6 +161,36 @@ function Invoke-StartupCleanup {
 
     # Prune download cache
     Invoke-CachePrune
+
+    # Clean orphaned .tmp files from interrupted atomic writes
+    $tmpConfigs = Get-ChildItem -LiteralPath $script:ScriptDir -Filter 'gtnh-updater-config*.tmp' -File -ErrorAction SilentlyContinue
+    foreach ($tmp in $tmpConfigs) {
+        try {
+            Remove-Item -LiteralPath $tmp.FullName -Force
+            Write-Log "[CLEANUP] Removed orphaned temp config: $($tmp.Name)"
+        }
+        catch {
+            # Silently continue
+        }
+    }
+
+    # Clean stale lock file (from a crash where finally didn't run)
+    $lockFile = Join-Path $script:ScriptDir '.gtnh-updater.lock'
+    if (Test-Path -LiteralPath $lockFile) {
+        try {
+            $lockPid = [int]((Get-Content -LiteralPath $lockFile -Raw -ErrorAction Stop).Trim())
+            $proc = Get-Process -Id $lockPid -ErrorAction SilentlyContinue
+            if (-not $proc) {
+                Remove-Item -LiteralPath $lockFile -Force
+                Write-Log "[CLEANUP] Removed stale lock file (PID $lockPid no longer running)"
+            }
+        }
+        catch {
+            # Lock file is corrupt - remove it
+            Remove-Item -LiteralPath $lockFile -Force -ErrorAction SilentlyContinue
+            Write-Log "[CLEANUP] Removed corrupt lock file"
+        }
+    }
 }
 
 function Invoke-CacheMenu {
@@ -194,14 +227,15 @@ function Invoke-CacheMenu {
         }
 
         Write-Host ""
-        Write-MenuOption -Key 'C' -Description 'Clear all cached files'
+        Write-MenuOption -Key '1' -Description 'Clear all cached files'
         Write-MenuOption -Key 'O' -Description 'Open cache folder'
-        Write-MenuOption -Key 'R' -Description 'Return to previous menu'
+        Write-Host ""
+        Write-MenuOption -Key 'R' -Description 'Return'
 
         $choice = Read-MenuChoice -Prompt 'Choose an option'
 
         switch ($choice.ToUpper()) {
-            'C' {
+            '1' {
                 if (Test-Path -LiteralPath $cacheDir) {
                     $cachedFiles = Get-ChildItem -LiteralPath $cacheDir -File
                     if ($cachedFiles.Count -gt 0) {

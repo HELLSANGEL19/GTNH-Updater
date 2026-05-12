@@ -62,6 +62,10 @@ function Load-Config {
 
     try {
         $raw = Get-Content -LiteralPath $script:ConfigPath -Raw -ErrorAction Stop
+        if ([string]::IsNullOrWhiteSpace($raw)) {
+            Write-Warn "Config file is empty. It may have been corrupted."
+            return $null
+        }
         $config = $raw | ConvertFrom-Json -ErrorAction Stop
         return $config
     }
@@ -87,7 +91,11 @@ function Load-Config {
 function Save-Config {
     <#
     .SYNOPSIS
-        Serialize config object to JSON and write to disk.
+        Serialize config object to JSON and write to disk atomically.
+    .DESCRIPTION
+        Uses write-to-temp-then-rename pattern to prevent corruption if the
+        process is interrupted mid-write. The rename operation is atomic on
+        both Windows (NTFS) and Linux (ext4/xfs/btrfs).
     .PARAMETER Config
         The config PSCustomObject to save.
     #>
@@ -97,10 +105,18 @@ function Save-Config {
 
     try {
         $json = $Config | ConvertTo-Json -Depth 10
-        Set-Content -LiteralPath $script:ConfigPath -Value $json -Encoding UTF8 -Force
+        $tempPath = "$($script:ConfigPath).tmp"
+        Set-Content -LiteralPath $tempPath -Value $json -Encoding UTF8 -Force
+        # Atomic rename (overwrites destination on both Windows and Linux)
+        Move-Item -LiteralPath $tempPath -Destination $script:ConfigPath -Force
     }
     catch {
         Write-Err "Failed to save config: $($_.Exception.Message)"
+        # Clean up temp file if rename failed
+        $tempPath = "$($script:ConfigPath).tmp"
+        if (Test-Path -LiteralPath $tempPath) {
+            try { Remove-Item -LiteralPath $tempPath -Force } catch {}
+        }
     }
 }
 
@@ -151,14 +167,34 @@ function Repair-Config {
         }
     }
 
-    # Ensure numeric fields are integers
+    # Clean mod arrays: remove null, empty, or whitespace-only entries
+    foreach ($field in @('CustomServerMods', 'CustomClientMods', 'OverrideServerMods', 'OverrideClientMods')) {
+        $arr = @($Config.$field)
+        $cleaned = @($arr | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        if ($cleaned.Count -ne $arr.Count) {
+            $Config.$field = $cleaned
+            $repaired = $true
+            Write-Log "[REPAIR] Removed $($arr.Count - $cleaned.Count) invalid entries from $field"
+        }
+    }
+
+    # Ensure numeric fields are integers with reasonable bounds
     if ($Config.BackupRetention -isnot [int]) {
         $parsed = 0
         if ([int]::TryParse("$($Config.BackupRetention)", [ref]$parsed) -and $parsed -gt 0) {
-            $Config.BackupRetention = $parsed
+            $Config.BackupRetention = [math]::Min($parsed, 50)
         } else {
             $Config.BackupRetention = 5
         }
+        $repaired = $true
+    }
+    elseif ($Config.BackupRetention -gt 50) {
+        Write-Warn "BackupRetention was $($Config.BackupRetention) - capping at 50."
+        $Config.BackupRetention = 50
+        $repaired = $true
+    }
+    elseif ($Config.BackupRetention -lt 1) {
+        $Config.BackupRetention = 1
         $repaired = $true
     }
 
@@ -237,7 +273,7 @@ function Export-ConfigFile {
 function Import-ConfigFile {
     <#
     .SYNOPSIS
-        Import a config from a specified file path.
+        Import a config from a specified file path with validation.
     .PARAMETER ImportPath
         The source file path to import from.
     .OUTPUTS
@@ -254,9 +290,45 @@ function Import-ConfigFile {
 
     try {
         $raw = Get-Content -LiteralPath $ImportPath -Raw -ErrorAction Stop
+        if ([string]::IsNullOrWhiteSpace($raw)) {
+            Write-Err "Import file is empty."
+            return $null
+        }
         $config = $raw | ConvertFrom-Json -ErrorAction Stop
+
+        # Validate the imported object looks like a GTNH updater config
+        # (must have at least one of the core fields to be a valid config)
+        $coreFields = @('ServerPath', 'ClientInstancePath', 'DefaultChannel', 'JavaVersion')
+        $hasCore = $false
+        foreach ($field in $coreFields) {
+            if ($config.PSObject.Properties.Name -contains $field) {
+                $hasCore = $true
+                break
+            }
+        }
+        if (-not $hasCore) {
+            Write-Err "File does not appear to be a GTNH Updater config (missing expected fields)."
+            return $null
+        }
+
+        # Warn about paths that may not exist on this machine
+        $pathWarnings = @()
+        foreach ($field in @('ServerPath', 'ClientInstancePath', 'JavaPath')) {
+            $val = $config.$field
+            if (-not [string]::IsNullOrEmpty($val) -and -not (Test-Path -LiteralPath $val)) {
+                $pathWarnings += "$field`: $val"
+            }
+        }
+        if ($pathWarnings.Count -gt 0) {
+            Write-Warn "Some paths in the imported config don't exist on this machine:"
+            foreach ($pw in $pathWarnings) {
+                Write-Info "  $pw"
+            }
+            Write-Info "You can update them in Settings > Instance Paths."
+        }
+
         $config = Repair-Config -Config $config
-        Write-Success "Config imported from: $ImportPath"
+        Write-Success "Config imported from: $(Split-Path -Leaf $ImportPath)"
         return $config
     }
     catch {
@@ -311,6 +383,9 @@ function Switch-Profile {
     } else {
         Join-Path $script:ScriptDir "gtnh-updater-config-$ProfileName.json"
     }
+
+    # Clear cached data that may be stale for the new profile's settings
+    $script:CachedWebsiteReleases = $null
 
     $config = Load-Config
     if ($null -ne $config) { $config = Repair-Config -Config $config }

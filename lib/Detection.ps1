@@ -236,7 +236,38 @@ function Get-InstalledGtnhVersion {
         [Parameter(Mandatory)][string]$InstancePath
     )
 
-    # Method 1: gtnh_version.txt (written by the nightly updater JAR)
+    # Method 1a: Native nightly state file (our updater's state tracking)
+    $nativeStateFile = Join-Path $InstancePath '.gtnh-nightly-state.json'
+    if (Test-Path -LiteralPath $nativeStateFile) {
+        try {
+            $nativeState = Get-Content -LiteralPath $nativeStateFile -Raw -ErrorAction Stop | ConvertFrom-Json
+            if ($nativeState.InstalledVersion) {
+                return $nativeState.InstalledVersion
+            }
+        } catch {
+            # Fall through to next method
+        }
+    }
+
+    # Method 1b: Caedis daily updater state file (legacy, for instances previously managed by Caedis)
+    # Check at instance root (server) or parent of .minecraft (client)
+    $stateFile = Join-Path $InstancePath '.gtnh-daily-updater.json'
+    $parentStateFile = Join-Path (Split-Path -Parent $InstancePath) '.gtnh-daily-updater.json'
+    $stateToCheck = if (Test-Path -LiteralPath $stateFile) { $stateFile }
+                    elseif (Test-Path -LiteralPath $parentStateFile) { $parentStateFile }
+                    else { $null }
+    if ($stateToCheck) {
+        try {
+            $stateContent = Get-Content -LiteralPath $stateToCheck -Raw -ErrorAction Stop | ConvertFrom-Json
+            if ($stateContent.configVersion) {
+                return $stateContent.configVersion
+            }
+        } catch {
+            # Fall through to next method
+        }
+    }
+
+    # Method 2: gtnh_version.txt (written by the old nightly updater JAR)
     $versionFile = Join-Path $InstancePath 'gtnh_version.txt'
     if (Test-Path -LiteralPath $versionFile) {
         try {
@@ -413,7 +444,18 @@ function Find-ServerInstances {
             if (-not (Test-Path -LiteralPath $searchRoot)) { continue }
 
             try {
-                $serverProps = Get-ChildItem -LiteralPath $searchRoot -Filter 'server.properties' -Recurse -Depth 4 -ErrorAction SilentlyContinue
+                # Exclude common large directories that won't contain Minecraft servers
+                $excludeDirs = @('.cache', 'node_modules', '.npm', '.local/lib', 'Downloads',
+                    '.steam', '.var', 'snap', '.gradle', '.m2', '.cargo', '.rustup')
+                $serverProps = Get-ChildItem -LiteralPath $searchRoot -Filter 'server.properties' -Recurse -Depth 4 -ErrorAction SilentlyContinue |
+                    Where-Object {
+                        $path = $_.FullName
+                        $excluded = $false
+                        foreach ($ex in $excludeDirs) {
+                            if ($path -like "*/$ex/*" -or $path -like "*\$ex\*") { $excluded = $true; break }
+                        }
+                        -not $excluded
+                    }
 
                 foreach ($prop in $serverProps) {
                     $instanceDir = $prop.DirectoryName
@@ -505,6 +547,8 @@ function Find-PrismInstances {
             # Flatpak locations
             (Join-Path $HOME '.var/app/org.prismlauncher.PrismLauncher/data/PrismLauncher/instances')
             (Join-Path $HOME '.var/app/org.polymc.PolyMC/data/PolyMC/instances')
+            # Snap locations
+            (Join-Path $HOME 'snap/prismlauncher/common/.local/share/PrismLauncher/instances')
         )
     }
 

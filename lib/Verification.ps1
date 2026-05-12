@@ -30,49 +30,46 @@ function Invoke-Verification {
         [Parameter(Mandatory)][ValidateSet('server', 'client')][string]$Target
     )
 
-    Write-Header "Post-Update Verification ($Target)"
-
     $allPassed = $true
+    $warnings = @()
 
     # Check mods/ directory exists
     $modsPath = Join-Path $InstancePath 'mods'
-    if (Test-Path -LiteralPath $modsPath) {
-        Write-Success "mods/ directory exists"
-    } else {
-        Write-Warn "mods/ directory is MISSING"
+    if (-not (Test-Path -LiteralPath $modsPath)) {
+        $warnings += "mods/ directory is MISSING"
         $allPassed = $false
     }
 
     # Check config/ directory exists
     $configPath = Join-Path $InstancePath 'config'
-    if (Test-Path -LiteralPath $configPath) {
-        Write-Success "config/ directory exists"
-    } else {
-        Write-Warn "config/ directory is MISSING"
+    if (-not (Test-Path -LiteralPath $configPath)) {
+        $warnings += "config/ directory is MISSING"
         $allPassed = $false
     }
 
     # Check libraries/ directory exists
     # For client, libraries/ is at the Prism instance root (parent of .minecraft)
     if ($Target -eq 'client') {
-        $librariesPath = Join-Path (Split-Path -Parent $InstancePath) 'libraries'
+        $clientInstanceRoot = if ((Split-Path -Leaf $InstancePath) -eq '.minecraft') {
+            Split-Path -Parent $InstancePath
+        } else {
+            $InstancePath
+        }
+        $librariesPath = Join-Path $clientInstanceRoot 'libraries'
     } else {
         $librariesPath = Join-Path $InstancePath 'libraries'
     }
-    if (Test-Path -LiteralPath $librariesPath) {
-        Write-Success "libraries/ directory exists"
-    } else {
-        Write-Warn "libraries/ directory is MISSING"
+    if (-not (Test-Path -LiteralPath $librariesPath)) {
+        $warnings += "libraries/ directory is MISSING"
         $allPassed = $false
     }
 
     # Count .jar files in mods/
+    $modCount = 0
     if (Test-Path -LiteralPath $modsPath) {
         $modCount = (Get-ChildItem -LiteralPath $modsPath -Filter '*.jar' -File).Count
-        if ($modCount -ge 150) {
-            Write-Success "Mod count: $modCount JARs"
-        } else {
-            Write-Warn "Mod count: $modCount JARs (expected 150+, may indicate incomplete extraction)"
+        if ($modCount -lt 150) {
+            $warnings += "Mod count: $modCount JARs (expected 150+, may indicate incomplete extraction)"
             $allPassed = $false
         }
     }
@@ -81,10 +78,8 @@ function Invoke-Verification {
     if (Test-Path -LiteralPath $modsPath) {
         $gregTechJar = Get-ChildItem -LiteralPath $modsPath -Filter '*.jar' -File |
             Where-Object { $_.Name -like '*gregtech*' -or $_.Name -like '*GT5*' }
-        if ($gregTechJar) {
-            Write-Success "GregTech JAR found: $($gregTechJar[0].Name)"
-        } else {
-            Write-Warn "GregTech JAR NOT found - this may not be a valid GTNH instance"
+        if (-not $gregTechJar) {
+            $warnings += "GregTech JAR NOT found - this may not be a valid GTNH instance"
             $allPassed = $false
         }
     }
@@ -92,17 +87,13 @@ function Invoke-Verification {
     # Target-specific checks
     if ($Target -eq 'server') {
         $journeyMapServer = Join-Path $InstancePath 'config' 'JourneyMapServer'
-        if (Test-Path -LiteralPath $journeyMapServer) {
-            Write-Success "config/JourneyMapServer exists"
-        } else {
-            Write-Warn "config/JourneyMapServer is MISSING (may need first server start to generate)"
+        if (-not (Test-Path -LiteralPath $journeyMapServer)) {
+            $warnings += "config/JourneyMapServer is MISSING (may need first server start to generate)"
         }
     } else {
         $optionsFile = Join-Path $InstancePath 'options.txt'
-        if (Test-Path -LiteralPath $optionsFile) {
-            Write-Success "options.txt exists"
-        } else {
-            Write-Warn "options.txt is MISSING (may need first client launch to generate)"
+        if (-not (Test-Path -LiteralPath $optionsFile)) {
+            $warnings += "options.txt is MISSING (may need first client launch to generate)"
         }
     }
 
@@ -120,25 +111,132 @@ function Invoke-Verification {
         }
 
         $duplicates = $baseNameMap.GetEnumerator() | Where-Object { $_.Value.Count -gt 1 }
-        if ($duplicates) {
-            $dupCount = @($duplicates).Count
-            Write-Warn "Found $dupCount mod(s) with multiple versions:"
-            foreach ($dup in $duplicates) {
-                $files = $dup.Value | Sort-Object
-                Write-Host "    * $($files -join ', ')" -ForegroundColor DarkYellow
+
+        # Second pass: fuzzy matching to catch naming convention differences
+        # (e.g., "Thaumic Machina" vs "ThaumicMachina", "Thaumic-Machina" vs "ThaumicMachina")
+        $fuzzyMap = @{}  # normalized name -> list of filenames
+        foreach ($jar in $modJars) {
+            $baseName = Get-ModBaseName -FileName $jar.Name
+            # Aggressively normalize: remove spaces, hyphens, underscores, dots, plus signs
+            $fuzzyName = ($baseName -replace '[\s\-_\.+]', '').ToLower()
+            if (-not $fuzzyMap.ContainsKey($fuzzyName)) {
+                $fuzzyMap[$fuzzyName] = @()
             }
-            Write-Warn "Multiple versions of the same mod can cause crashes. Remove the older version(s)."
+            $fuzzyMap[$fuzzyName] += $jar.Name
+        }
+        $fuzzyDuplicates = $fuzzyMap.GetEnumerator() | Where-Object { $_.Value.Count -gt 1 }
+
+        # Merge: use fuzzy results (superset of exact results)
+        $allDuplicates = if ($fuzzyDuplicates) { $fuzzyDuplicates } else { $duplicates }
+
+        if ($allDuplicates) {
+            $dupCount = @($allDuplicates).Count
+            $warnings += "Found $dupCount mod(s) with multiple versions:"
+            foreach ($dup in $allDuplicates) {
+                $files = $dup.Value | Sort-Object
+                $warnings += "    * $($files -join ', ')"
+            }
+            $warnings += "Multiple versions of the same mod will crash the game. Remove the older version(s)."
             $allPassed = $false
-        } else {
-            Write-Success "No duplicate mods detected"
         }
     }
 
-    # Summary
-    Write-Host ""
+    # Check for zero-byte (corrupted) jar files
+    if (Test-Path -LiteralPath $modsPath) {
+        $emptyJars = Get-ChildItem -LiteralPath $modsPath -Filter '*.jar' -File | Where-Object { $_.Length -eq 0 }
+        if ($emptyJars) {
+            $warnings += "Found $($emptyJars.Count) empty/corrupted JAR file(s):"
+            foreach ($ej in $emptyJars) {
+                $warnings += "    * $($ej.Name) (0 bytes)"
+            }
+            $warnings += "These will cause class-not-found errors. Delete and re-download them."
+            $allPassed = $false
+        }
+    }
+
+    # Deep duplicate check: read mod IDs from mcmod.info inside jars
+    # This catches cases where filenames are completely different but the mod ID is the same
+    if (Test-Path -LiteralPath $modsPath) {
+        $modIdMap = @{}  # modId -> list of filenames
+        $modJarsForId = Get-ChildItem -LiteralPath $modsPath -Filter '*.jar' -File | Where-Object { $_.Length -gt 0 }
+        foreach ($jar in $modJarsForId) {
+            try {
+                $zip = [System.IO.Compression.ZipFile]::OpenRead($jar.FullName)
+                $mcmodEntry = $zip.Entries | Where-Object { $_.FullName -eq 'mcmod.info' } | Select-Object -First 1
+                if ($mcmodEntry) {
+                    $reader = [System.IO.StreamReader]::new($mcmodEntry.Open())
+                    $content = $reader.ReadToEnd()
+                    $reader.Dispose()
+                    # Extract modid values (simple regex -- mcmod.info is JSON-like)
+                    $modIds = [regex]::Matches($content, '"modid"\s*:\s*"([^"]+)"') | ForEach-Object { $_.Groups[1].Value.ToLower() }
+                    foreach ($modId in $modIds) {
+                        if (-not $modIdMap.ContainsKey($modId)) { $modIdMap[$modId] = @() }
+                        $modIdMap[$modId] += $jar.Name
+                    }
+                }
+                $zip.Dispose()
+            } catch {
+                # Skip jars that can't be read (corrupted, not a zip, etc.)
+            }
+        }
+        $idDuplicates = $modIdMap.GetEnumerator() | Where-Object { $_.Value.Count -gt 1 }
+        if ($idDuplicates) {
+            $idDupCount = @($idDuplicates).Count
+            $warnings += "Found $idDupCount mod ID(s) present in multiple JARs:"
+            foreach ($dup in $idDuplicates) {
+                $warnings += "    * Mod ID '$($dup.Key)': $($dup.Value -join ', ')"
+            }
+            $warnings += "Duplicate mod IDs will crash the game. Remove the older version(s)."
+            $allPassed = $false
+        }
+    }
+
+    # Check for jars in mods/1.7.10/ that also exist in mods/ (cross-folder duplicates)
+    if (Test-Path -LiteralPath $modsPath) {
+        $subModsPath = Join-Path $modsPath '1.7.10'
+        if (Test-Path -LiteralPath $subModsPath) {
+            $mainMods = @(Get-ChildItem -LiteralPath $modsPath -Filter '*.jar' -File | ForEach-Object { $_.Name })
+            $subMods = @(Get-ChildItem -LiteralPath $subModsPath -Filter '*.jar' -File)
+            $crossDupes = @()
+            foreach ($subMod in $subMods) {
+                $subBase = (Get-ModBaseName -FileName $subMod.Name) -replace '[\s\-_\.+]', ''
+                foreach ($mainMod in $mainMods) {
+                    $mainBase = (Get-ModBaseName -FileName $mainMod) -replace '[\s\-_\.+]', ''
+                    if ($subBase -eq $mainBase) {
+                        $crossDupes += "$($subMod.Name) (mods/1.7.10/) conflicts with $mainMod (mods/)"
+                        break
+                    }
+                }
+            }
+            if ($crossDupes.Count -gt 0) {
+                $warnings += "Found $($crossDupes.Count) cross-folder duplicate(s):"
+                foreach ($cd in $crossDupes) {
+                    $warnings += "    * $cd"
+                }
+                $allPassed = $false
+            }
+        }
+    }
+
+    # Log all results regardless of pass/fail
+    Write-Log "[VERIFY] Target=$Target, Passed=$allPassed, ModCount=$modCount, Warnings=$($warnings.Count)"
+    foreach ($w in $warnings) { Write-Log "[VERIFY] $w" }
+
+    # Display: single line if all passed, full details if issues found
     if ($allPassed) {
-        Write-Success "All verification checks passed."
+        Write-Success "Verification passed ($modCount mods, no issues)"
     } else {
-        Write-Warn "Some verification checks failed - review warnings above."
+        Write-Host ""
+        Write-Warn "Verification found issues:"
+        foreach ($w in $warnings) {
+            if ($w -match '^\s{4}\*') {
+                Write-Host "  $w" -ForegroundColor DarkYellow
+            } elseif ($w -match '^(Multiple versions|Duplicate mod IDs|These will cause|Remove the older)') {
+                Write-Info "  $w"
+            } else {
+                Write-Warn $w
+            }
+        }
+        Write-Host ""
     }
 }
