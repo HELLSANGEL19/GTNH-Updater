@@ -1,0 +1,26 @@
+# Runtime directories (created by the script)
+cache/
+logs/
+backups/
+.temp/
+.nightly-updater/
+staging-*/
+
+# User config (contains local paths)
+gtnh-updater-config.json
+gtnh-updater-config-*.json
+gtnh-config-export.json
+gtnh-patches-export.json
+
+# Broken config backups
+gtnh-updater-config.broken-*.json
+
+# Atomic write temp files
+*.tmp
+
+# Lock file
+.gtnh-updater.lock
+
+# Dev files (local only)
+kiro.bat
+lib/DevTools.ps1
