@@ -2,58 +2,46 @@
 
 ## [0.4.0-beta] - 2026-05-12
 
-### 
+### Added
 
-### \### Added
+* Lock file prevents running two instances of the updater at the same time
+* Main menu shows when mods were last refreshed, even if the version tag hasn't changed
+* Changelog viewer paginates long release notes (press Enter for more, Q to stop)
+* Setup wizard validates that manually-entered Java paths are real Java binaries
+* Adding config patches now warns if the value doesn't match the key type
+* Importing a config warns about paths that don't exist on this machine
+* Setup wizard has an explicit Skip option for Java
+* Snap-installed Prism Launcher instances are now auto-detected on Linux
 
-### 
+### Fixed
 
-* ### \* Lock file prevents running two instances of the updater at the same time
-* ### \* Main menu shows when mods were last refreshed, even if the version tag hasn't changed
-* ### \* Changelog viewer paginates long release notes (press Enter for more, Q to stop)
-* ### \* Setup wizard validates that manually-entered Java paths are real Java binaries
-* ### \* Adding config patches now warns if the value doesn't match the key type
-* ### \* Importing a config warns about paths that don't exist on this machine
-* ### \* Setup wizard has an explicit Skip option for Java
-* ### \* Snap-installed Prism Launcher instances are now auto-detected on Linux
+* Daily/experimental updates no longer mix up mod versions between the manifest and the release zip
+* Changing your instance path no longer leaves a stale version from the old path
+* Switching channels or profiles now refreshes version info immediately
+* Self-update can recover if it fails partway through copying files
+* Creating a profile and cancelling the wizard no longer leaves an empty config file behind
+* Disk space warnings on Linux now check the correct drive instead of always showing root
+* Custom mod scan no longer shows override mods as "not in the pack"
+* Config auto-detection no longer picks up version-tracking keys that change every release
 
-### 
+### Improved
 
-### \### Fixed
-
-### 
-
-* ### \* Daily/experimental updates no longer mix up mod versions between the manifest and the release zip
-* ### \* Changing your instance path no longer leaves a stale version from the old path
-* ### \* Switching channels or profiles now refreshes version info immediately
-* ### \* Self-update can recover if it fails partway through copying files
-* ### \* Creating a profile and cancelling the wizard no longer leaves an empty config file behind
-* ### \* Disk space warnings on Linux now check the correct drive instead of always showing root
-* ### \* Custom mod scan no longer shows override mods as "not in the pack"
-* ### \* Config auto-detection no longer picks up version-tracking keys that change every release
-
-### 
-
-### \### Improved
-
-### 
-
-* ### \* Cleaner console output during updates (progress bars instead of per-file listings)
-* ### \* Verification shows a single pass/fail line unless there are actual issues
-* ### \* All stable update steps are numbered consistently
-* ### \* Error messages now tell you what to do, not just what went wrong
-* ### \* Help screen updated to match current features
-* ### \* Preserved files list now includes opencomputers, maps, and optionsof.txt
-* ### \* Linux server detection is faster (skips large irrelevant directories)
-* ### \* Headless Linux systems get a clear message instead of a cryptic error when opening folders
-* ### \* Config and state files are protected against corruption from interrupted saves
+* Cleaner console output during updates (progress bars instead of per-file listings)
+* Verification shows a single pass/fail line unless there are actual issues
+* All stable update steps are numbered consistently
+* Error messages now tell you what to do, not just what went wrong
+* Help screen updated to match current features
+* Preserved files list now includes opencomputers, maps, and optionsof.txt
+* Linux server detection is faster (skips large irrelevant directories)
+* Headless Linux systems get a clear message instead of a cryptic error when opening folders
+* Config and state files are protected against corruption from interrupted saves
 
 
 ## [0.3.1-beta] - 2026-05-11
 
 ### Improved
 
-* Daily/Experimental updates now use the gtnh-daily-updater Go binary instead of the Java-based nightly updater JAR ΓÇö Java 21+ is no longer required
+* Daily/Experimental updates now use the gtnh-daily-updater Go binary instead of the Java-based nightly updater JAR — Java 21+ is no longer required
 * Switched nightly updater source to the Caedis/gtnh-daily-updater GitHub repository
 * Updated README, help screen, and channel descriptions to reflect no Java requirement for daily/experimental channels
 
@@ -137,7 +125,7 @@
 
 ### Added
 - **Linux support**: New `Launch-GTNHUpdater.sh` launcher with package manager detection (apt, dnf, pacman, zypper, snap)
-- **Cross-platform detection**: Java scans `/usr/lib/jvm/`, SDKMAN, `$JAVA_HOME` on Linux; server detection scans `/opt/`, `~/servers/`, `~/Games/`; client detection scans `~/.local/share/PrismLauncher/`, flatpak paths, etc.
+- **Cross-platform detection**: Java scans `/usr/lib/jvm/`, SDKMAN, `$JAVA_HOME` on Linux; server detection scans `/opt/`, `~/servers/`, `~/Games/`; client detection scans `~/.local/share/PrismLauncher/...`
 - **Setup wizard asks what you manage**: New step asks "server only / client only / both" and skips irrelevant detection steps
 - **Auto-target selection**: If only one target is configured, update skips the "server/client/both?" menu entirely
 - **Duplicate mod detection**: Post-update verification catches multiple versions of the same mod (e.g., xmod-2.0.3.jar and xmod-2.0.5.jar)
