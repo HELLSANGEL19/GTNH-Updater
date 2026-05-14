@@ -115,15 +115,6 @@ function Invoke-NightlyUpdate {
         if ([string]::IsNullOrEmpty($currentVersion)) { $currentVersion = '' }
     }
 
-    if ($currentVersion -eq $versionLabel) {
-        Write-Info "Already on $versionLabel."
-        Write-Host ""
-        if (-not (Confirm-Action "Re-apply this version anyway? (will re-download changed mods)")) {
-            Write-Info "Update skipped."
-            return
-        }
-    }
-
     # ── Step 3: Compute mod diff and show update plan ───────────────────────
     # Detect stable-to-nightly transition: only trigger if the current version looks
     # like a pure stable release (X.Y.Z with no nightly/daily/date indicators)
@@ -136,7 +127,81 @@ function Invoke-NightlyUpdate {
         $isTransition = -not $looksLikeNightly -and -not $looksLikePreRelease
     }
 
-    # Compute the mod diff early so we can show it in the plan (skip for transitions — everything is new)
+    # Validate nightly state matches reality: if the state says we're on a nightly
+    # but the mods on disk don't match (user manually restored files), force a transition
+    if (-not $isTransition -and $state -and $state.ManifestMods) {
+        $modsDir = Join-Path $instancePath 'mods'
+        if (Test-Path -LiteralPath $modsDir) {
+            $stateModCount = @($state.ManifestMods.PSObject.Properties).Count
+            if ($stateModCount -gt 0) {
+                # Spot-check: verify at least 50% of the state's mods exist on disk
+                $foundCount = 0
+                $checkCount = [math]::Min(20, $stateModCount)
+                $sampled = @($state.ManifestMods.PSObject.Properties | Select-Object -First $checkCount)
+                foreach ($prop in $sampled) {
+                    if (Test-Path -LiteralPath (Join-Path $modsDir $prop.Value)) {
+                        $foundCount++
+                    }
+                }
+                $matchRatio = $foundCount / $checkCount
+                if ($matchRatio -lt 0.5) {
+                    Write-Warn "Mods on disk don't match the recorded nightly state."
+                    Write-Info "It looks like files were restored or replaced outside the updater."
+                    Write-Info "A clean transition will be performed."
+                    Write-Host ""
+                    $isTransition = $true
+                    # Clear stale state so it doesn't confuse future runs
+                    $state = $null
+                    $currentVersion = ''
+                    $statePath = Join-Path $instancePath '.gtnh-nightly-state.json'
+                    if (Test-Path -LiteralPath $statePath) {
+                        Remove-Item -LiteralPath $statePath -Force -ErrorAction SilentlyContinue
+                    }
+                }
+            }
+        }
+    }
+
+    # Second check: config says nightly but no state file exists (or state has no mod tracking)
+    # Verify by checking if a few manifest mods are actually present on disk
+    if (-not $isTransition -and (-not $state -or -not $state.ManifestMods -or @($state.ManifestMods.PSObject.Properties).Count -eq 0) -and $currentVersion -match 'nightly|daily|experimental|\d{4}-\d{2}-\d{2}') {
+        $modsDir = Join-Path $instancePath 'mods'
+        if (Test-Path -LiteralPath $modsDir) {
+            # Spot-check a few mods from the current manifest against disk
+            $manifestCheckCount = 0
+            $manifestFoundCount = 0
+            $checkMods = @($manifest.github_mods.PSObject.Properties | Select-Object -First 10)
+            foreach ($prop in $checkMods) {
+                $modSide = $prop.Value.side.ToUpper()
+                $targetSide = $Target.ToUpper()
+                if ($modSide -ne 'BOTH' -and $modSide -ne $targetSide) { continue }
+                $expectedFile = "$($prop.Name)-$($prop.Value.version).jar"
+                $manifestCheckCount++
+                if (Test-Path -LiteralPath (Join-Path $modsDir $expectedFile)) {
+                    $manifestFoundCount++
+                }
+            }
+            if ($manifestCheckCount -gt 0 -and ($manifestFoundCount / $manifestCheckCount) -lt 0.3) {
+                Write-Warn "Instance appears to have been restored to a non-nightly state."
+                Write-Info "A clean transition will be performed."
+                Write-Host ""
+                $isTransition = $true
+                $currentVersion = ''
+            }
+        }
+    }
+
+    # "Already on this version" check - only if we haven't detected a state mismatch
+    if (-not $isTransition -and $currentVersion -eq $versionLabel) {
+        Write-Info "Already on $versionLabel."
+        Write-Host ""
+        if (-not (Confirm-Action "Re-apply this version anyway? (will re-download changed mods)")) {
+            Write-Info "Update skipped."
+            return
+        }
+    }
+
+    # Compute the mod diff early so we can show it in the plan (skip for transitions -- everything is new)
     $precomputedDiff = $null
     if (-not $isTransition) {
         $precomputedDiff = Compare-ModsWithManifest -Manifest $manifest -InstancePath $instancePath `
@@ -233,10 +298,25 @@ function Invoke-NightlyUpdate {
         }
 
         # Restore custom mods from temp (not from rollback -- rollback may be null)
+        # Skip any custom mods that are also in the manifest (the manifest version supersedes)
         if (Test-Path -LiteralPath $customModTempDir) {
+            # Build a set of manifest mod base names to detect conflicts
+            $manifestBaseNames = @{}
+            foreach ($prop in $manifest.github_mods.PSObject.Properties) {
+                $manifestBaseNames[(Get-ModBaseName -FileName "$($prop.Name)-$($prop.Value.version).jar")] = $prop.Name
+            }
+
             $savedCustom = Get-ChildItem -LiteralPath $customModTempDir -Filter '*.jar' -File -ErrorAction SilentlyContinue
             $restoredCustomCount = 0
+            $skippedConflicts = @()
             foreach ($cm in $savedCustom) {
+                $cmBase = Get-ModBaseName -FileName $cm.Name
+                if ($manifestBaseNames.ContainsKey($cmBase)) {
+                    # This custom mod conflicts with a manifest mod - skip it
+                    $skippedConflicts += $cm.Name
+                    Write-Log "[NIGHTLY] Skipping custom mod '$($cm.Name)' - superseded by manifest mod '$($manifestBaseNames[$cmBase])'"
+                    continue
+                }
                 $destPath = Join-Path $modsDir $cm.Name
                 Copy-Item -LiteralPath $cm.FullName -Destination $destPath -Force
                 $restoredCustomCount++
@@ -244,6 +324,13 @@ function Invoke-NightlyUpdate {
             }
             if ($restoredCustomCount -gt 0) {
                 Write-Info "Preserved $restoredCustomCount custom mod(s)"
+            }
+            if ($skippedConflicts.Count -gt 0) {
+                Write-Warn "$($skippedConflicts.Count) custom mod(s) skipped (newer version in nightly pack):"
+                foreach ($sc in $skippedConflicts) {
+                    Write-Info "  $sc"
+                }
+                Write-Info "Remove these from Settings > Custom Mods if you want the pack version."
             }
             Remove-Item -LiteralPath $customModTempDir -Recurse -Force -ErrorAction SilentlyContinue
         }

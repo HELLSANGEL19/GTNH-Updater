@@ -25,10 +25,15 @@ function Find-KeyInLines {
         Optional section name to scope the search.
     #>
     param(
-        [Parameter(Mandatory)][string[]]$Lines,
+        [string[]]$Lines,
         [Parameter(Mandatory)][string]$Key,
         [string]$Section = ''
     )
+
+    # Handle empty file content gracefully
+    if (-not $Lines -or $Lines.Count -eq 0 -or ($Lines.Count -eq 1 -and [string]::IsNullOrWhiteSpace($Lines[0]))) {
+        return -1
+    }
 
     $escapedKey = [regex]::Escape($Key)
     $pattern = "^\s*${escapedKey}\s*="
@@ -110,7 +115,7 @@ function Set-ConfigValue {
     }
 
     try {
-        $lines = Get-Content -LiteralPath $fullPath -Encoding UTF8
+        $lines = @(Get-Content -LiteralPath $fullPath -Encoding UTF8)
 
         $i = Find-KeyInLines -Lines $lines -Key $Key -Section $Section
         $found = $i -ge 0
@@ -188,11 +193,13 @@ function Invoke-ConfigPatches {
 
         # Check if the key exists in the file
         try {
-            $lines = Get-Content -LiteralPath $fullPath -Encoding UTF8
-            $keyFound = (Find-KeyInLines -Lines $lines -Key $patch.Key -Section ($patch.Section ?? '')) -ge 0
+            $lines = @(Get-Content -LiteralPath $fullPath -Encoding UTF8)
+            $sectionParam = if ($patch.PSObject.Properties.Name -contains 'Section' -and -not [string]::IsNullOrEmpty($patch.Section)) { $patch.Section } else { '' }
+            $keyFound = (Find-KeyInLines -Lines $lines -Key $patch.Key -Section $sectionParam) -ge 0
+            Write-Log "[PATCH-PREFLIGHT] File: $($patch.FilePath) | Key: $($patch.Key) | Section: '$sectionParam' | Lines: $($lines.Count) | Found: $keyFound"
 
             if (-not $keyFound) {
-                $sectionNote = $patch.Section ? " in section '$($patch.Section)'" : ''
+                $sectionNote = $sectionParam ? " in section '$sectionParam'" : ''
                 $issues += [PSCustomObject]@{
                     Patch   = $patch
                     Problem = "Key '$($patch.Key)' not found${sectionNote} in $($patch.FilePath)"
@@ -205,6 +212,7 @@ function Invoke-ConfigPatches {
                 Patch   = $patch
                 Problem = "Cannot read file: $($_.Exception.Message)"
             }
+            Write-Log "[PATCH-PREFLIGHT] EXCEPTION for $($patch.FilePath): $($_.Exception.Message)"
             continue
         }
 
@@ -301,7 +309,7 @@ function Test-ConfigPatches {
             continue
         }
 
-        $lines = Get-Content -LiteralPath $fullPath -Encoding UTF8
+        $lines = @(Get-Content -LiteralPath $fullPath -Encoding UTF8)
         $currentValue = '(not found)'
         $idx = Find-KeyInLines -Lines $lines -Key $patch.Key -Section ($patch.Section ?? '')
         if ($idx -ge 0) {

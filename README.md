@@ -142,7 +142,7 @@ Manage multiple independent GTNH instances (e.g., a main server and a daily test
 - **Config export/import** for moving to a new machine
 - **GTNH changelog viewer** to see what changed before updating
 - **Update history** log of all past updates
-- **Version 0.4.0-beta** from changelog files in your instance
+- **Version auto-detection** from changelog files in your instance
 - **Self-update** checks for new updater versions on startup
 - **Download cache** so re-running an update doesn't re-download
 
@@ -166,18 +166,27 @@ Shows installed versions, latest available version, channel, and counts of custo
 - `config/JourneyMapServer/` - Server JourneyMap UUID
 - `serverutilities/` - Server Utilities config and data
 - `opencomputers/` - OpenComputers data
+- `visualprospecting/` - Server-side ore vein data
 - `ops.json`, `whitelist.json`, `server.properties`
 - `banned-ips.json`, `banned-players.json`, `usercache.json`
 
 ### Client
 - `journeymap/` - Waypoints and maps
+- `visualprospecting/` - JourneyMap ore vein data
+- `TCNodeTracker/` - JourneyMap Thaumcraft node data
+- `saves/` - Singleplayer worlds and NEI data
+- `schematics/` - Saved schematics
+- `screenshots/` - User screenshots
+- `shaderpacks/` - Shader pack files
+- `resourcepacks/`
+- `opencomputers/` - OpenComputers data
+- `maps/` - Map data
 - `config/NEI/` - NEI settings, hidden items, bookmarks
 - `config/shaders.properties` - Active shader selection
 - `config/vendingmachine/` - Vending machine favourites
-- `opencomputers/` - OpenComputers data
-- `maps/` - Map data
 - `options.txt`, `optionsof.txt`, `optionsnf.txt`, `servers.dat`
-- `resourcepacks/`
+- `localconfig.cfg` - Local config changes
+- `BotaniaVars.dat` - Lexica Botania bookmarks
 
 ## Backups
 

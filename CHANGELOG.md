@@ -1,47 +1,72 @@
 # Changelog
 
+## [0.4.3-beta] - 2026-05-14
+
+### Fixed
+
+* Config patcher crash when reading files ("Cannot bind argument to parameter 'Lines'")
+* Config patches now apply reliably on all systems regardless of file encoding or content
+* Expanded client file preservation to match GTNH wiki (visualprospecting, TCNodeTracker, saves, schematics, screenshots, shaderpacks, localconfig.cfg, BotaniaVars.dat)
+* Added visualprospecting to server preservation list
+* Version detection now re-runs on every startup (fixes stale version display when switching between updater instances)
+* Linux launcher script now has executable permission set in the repo
+
+### Improved
+
+* Added debug logging to config patch pre-flight validation for easier troubleshooting
+
+## [0.4.2-beta] - 2026-05-14
+
+### Fixed
+
+* Stale nightly state detection: spot-checks mods on disk vs recorded state
+* Custom mods that conflict with manifest mods are now skipped during stable-to-nightly transition
+* "Already on this version" check moved after state validation to prevent false positives
+
+## [0.4.1-beta] - 2026-05-12
+
+### Fixed
+
+* Hotfix re-release of 0.4.0 with corrected files
+
 ## [0.4.0-beta] - 2026-05-12
 
 ### Added
 
-* Lock file prevents running two instances of the updater at the same time
-* Main menu shows when mods were last refreshed, even if the version tag hasn't changed
-* Changelog viewer paginates long release notes (press Enter for more, Q to stop)
-* Setup wizard validates that manually-entered Java paths are real Java binaries
-* Adding config patches now warns if the value doesn't match the key type
-* Importing a config warns about paths that don't exist on this machine
-* Setup wizard has an explicit Skip option for Java
-* Snap-installed Prism Launcher instances are now auto-detected on Linux
+* Native daily/experimental update engine (no external binaries, no Java, no Git required)
+* Downloads mods directly from GTNH Maven with GitHub fallback
+* Downloads external mods from gtnh-assets.json database
+* Parallel mod downloads (up to 8 concurrent)
+* Stable-to-nightly transition with clean wipe and custom mod preservation
+* Nightly state tracking (.gtnh-nightly-state.json)
+* Main menu shows latest daily version from DreamAssemblerXXL manifest
+* "Mods updated" hint when manifest is newer than config tag date
 
 ### Fixed
 
-* Daily/experimental updates no longer mix up mod versions between the manifest and the release zip
-* Changing your instance path no longer leaves a stale version from the old path
-* Switching channels or profiles now refreshes version info immediately
-* Self-update can recover if it fails partway through copying files
-* Creating a profile and cancelling the wizard no longer leaves an empty config file behind
-* Disk space warnings on Linux now check the correct drive instead of always showing root
-* Custom mod scan no longer shows override mods as "not in the pack"
-* Config auto-detection no longer picks up version-tracking keys that change every release
+* HttpClient resource leaks (8 locations)
+* Config sync no longer overwrites Maven-sourced mods from the release zip
+* Atomic writes for config and state files
+* Lock file mechanism to prevent concurrent runs
+* Self-update recovery on failure
+* Profile management edge cases
+* Linux disk space detection
+* Zip handle leaks
+* Nested section key collisions in config diff
+* Double-nested zip detection
+* Version comparison ordering
 
 ### Improved
 
-* Cleaner console output during updates (progress bars instead of per-file listings)
-* Verification shows a single pass/fail line unless there are actual issues
-* All stable update steps are numbered consistently
-* Error messages now tell you what to do, not just what went wrong
-* Help screen updated to match current features
-* Preserved files list now includes opencomputers, maps, and optionsof.txt
-* Linux server detection is faster (skips large irrelevant directories)
-* Headless Linux systems get a clear message instead of a cryptic error when opening folders
-* Config and state files are protected against corruption from interrupted saves
-
+* Cleaner console output: collapsed preserve/restore lists, progress bar for external mods, collapsed verification into pass/fail
+* README rewritten (trimmed, user-focused)
+* CONTRIBUTING updated with development guidelines
 
 ## [0.3.1-beta] - 2026-05-11
 
 ### Improved
 
-* Daily/Experimental updates now use the gtnh-daily-updater Go binary instead of the Java-based nightly updater JAR — Java 21+ is no longer required
+* Daily/Experimental updates now use the gtnh-daily-updater Go binary instead of the Java-based nightly updater JAR ΓÇö Java 21+ is no longer required
 * Switched nightly updater source to the Caedis/gtnh-daily-updater GitHub repository
 * Updated README, help screen, and channel descriptions to reflect no Java requirement for daily/experimental channels
 
@@ -125,7 +150,7 @@
 
 ### Added
 - **Linux support**: New `Launch-GTNHUpdater.sh` launcher with package manager detection (apt, dnf, pacman, zypper, snap)
-- **Cross-platform detection**: Java scans `/usr/lib/jvm/`, SDKMAN, `$JAVA_HOME` on Linux; server detection scans `/opt/`, `~/servers/`, `~/Games/`; client detection scans `~/.local/share/PrismLauncher/...`
+- **Cross-platform detection**: Java scans `/usr/lib/jvm/`, SDKMAN, `$JAVA_HOME` on Linux; server detection scans `/opt/`, `~/servers/`, `~/Games/`; client detection scans `~/.local/share/PrismLauncher/`, flatpak paths, etc.
 - **Setup wizard asks what you manage**: New step asks "server only / client only / both" and skips irrelevant detection steps
 - **Auto-target selection**: If only one target is configured, update skips the "server/client/both?" menu entirely
 - **Duplicate mod detection**: Post-update verification catches multiple versions of the same mod (e.g., xmod-2.0.3.jar and xmod-2.0.5.jar)

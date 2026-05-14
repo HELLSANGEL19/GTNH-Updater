@@ -2789,17 +2789,17 @@ function Invoke-MainLoop {
             Wait-ForKey
         }
 
-        # Auto-detect installed version if unknown (silent, no output)
-        if ([string]::IsNullOrEmpty($config.InstalledServerVersion) -and -not [string]::IsNullOrEmpty($config.ServerPath) -and (Test-Path -LiteralPath $config.ServerPath)) {
+        # Auto-detect installed version on every startup (handles switching between updater instances)
+        if (-not [string]::IsNullOrEmpty($config.ServerPath) -and (Test-Path -LiteralPath $config.ServerPath)) {
             $detected = Get-InstalledGtnhVersion -InstancePath $config.ServerPath
-            if ($detected -ne 'unknown') {
+            if ($detected -ne 'unknown' -and $detected -ne $config.InstalledServerVersion) {
                 $config.InstalledServerVersion = $detected
                 $configChanged = $true
             }
         }
-        if ([string]::IsNullOrEmpty($config.InstalledClientVersion) -and -not [string]::IsNullOrEmpty($config.ClientInstancePath) -and (Test-Path -LiteralPath $config.ClientInstancePath)) {
+        if (-not [string]::IsNullOrEmpty($config.ClientInstancePath) -and (Test-Path -LiteralPath $config.ClientInstancePath)) {
             $detected = Get-InstalledGtnhVersion -InstancePath $config.ClientInstancePath
-            if ($detected -ne 'unknown') {
+            if ($detected -ne 'unknown' -and $detected -ne $config.InstalledClientVersion) {
                 $config.InstalledClientVersion = $detected
                 $configChanged = $true
             }

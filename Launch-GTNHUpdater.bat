@@ -65,4 +65,6 @@ exit /b 0
 
 :launch
 pwsh -NoProfile -ExecutionPolicy Bypass -File "%~dp0Update-GTNH.ps1"
-pause
+echo.
+echo   Press any key to close this window...
+pause >nul
