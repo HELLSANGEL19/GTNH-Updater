@@ -34,6 +34,11 @@ function Test-IsNetworkException {
             $ex.InnerException -is [System.Net.Http.HttpRequestException])
 }
 
+# ── ETag Cache for GitHub API ─────────────────────────────────────────────────
+# Stores ETags and cached responses to avoid burning rate limit on repeated calls.
+# Key = URI, Value = @{ ETag; Response }
+$script:GitHubETagCache = @{}
+
 function New-ZipUrls {
     param(
         [Parameter(Mandatory)][string]$Version,
@@ -54,6 +59,7 @@ function Invoke-GitHubApi {
         Wrapper for Invoke-RestMethod with User-Agent header and error handling.
     .DESCRIPTION
         Calls the specified URI with a GTNH-Updater-Script User-Agent header.
+        Supports ETag caching to avoid burning GitHub rate limit on repeated calls.
         Handles HTTP 403 rate-limit responses, other HTTP errors, and network
         connectivity failures. Returns $null on failure, response object on success.
     .PARAMETER Uri
@@ -68,17 +74,45 @@ function Invoke-GitHubApi {
 
     try {
         $headers = @{ 'User-Agent' = 'GTNH-Updater-Script' }
-        $response = Invoke-RestMethod -Uri $Uri -Method $Method -Headers $headers -TimeoutSec 30 -ErrorAction Stop
-        return $response
+
+        # Add If-None-Match header if we have a cached ETag for this URI
+        $cached = $script:GitHubETagCache[$Uri]
+        if ($cached -and $cached.ETag) {
+            $headers['If-None-Match'] = $cached.ETag
+        }
+
+        $response = Invoke-WebRequest -Uri $Uri -Method $Method -Headers $headers -TimeoutSec 30 -UseBasicParsing -ErrorAction Stop
+
+        # Handle 304 Not Modified (some PS7 versions don't throw on 304)
+        if ($response.StatusCode -eq 304 -and $cached -and $cached.Response) {
+            Write-Log "[API] 304 Not Modified for $Uri - using cached response"
+            return $cached.Response
+        }
+
+        # Store ETag from response for future conditional requests
+        $etag = $response.Headers['ETag']
+        if ($etag) {
+            $etagValue = if ($etag -is [System.Collections.IEnumerable] -and $etag -isnot [string]) { $etag[0] } else { $etag }
+            $parsed = $response.Content | ConvertFrom-Json
+            $script:GitHubETagCache[$Uri] = @{ ETag = $etagValue; Response = $parsed }
+            return $parsed
+        }
+
+        return ($response.Content | ConvertFrom-Json)
     }
     catch {
         $ex = $_.Exception
 
-        # Check for HTTP errors (HttpResponseException from Invoke-RestMethod)
+        # Check for HTTP 304 Not Modified - return cached response
         if ($ex -is [Microsoft.PowerShell.Commands.HttpResponseException] -or
             ($ex.Response -and $ex.Response.StatusCode)) {
 
-            $statusCode = $ex.Response.StatusCode.value__
+            $statusCode = if ($ex.Response) { $ex.Response.StatusCode.value__ } else { 0 }
+
+            if ($statusCode -eq 304 -and $cached -and $cached.Response) {
+                Write-Log "[API] 304 Not Modified for $Uri - using cached response"
+                return $cached.Response
+            }
 
             if ($statusCode -eq 403) {
                 # Check for rate-limit reset header
@@ -94,9 +128,13 @@ function Invoke-GitHubApi {
                     Write-Warn "GitHub API returned HTTP 403 (Forbidden). You may be rate-limited."
                 }
                 Write-Log "[WARN] GitHub API 403 for $Uri"
+                # Return cached response if available (better than nothing)
+                if ($cached -and $cached.Response) {
+                    Write-Log "[API] Returning cached response after 403 for $Uri"
+                    return $cached.Response
+                }
             }
             elseif ($statusCode -eq 404) {
-                # 404 is silent - resource does not exist yet (e.g. no releases published)
                 Write-Log "[INFO] GitHub API 404 for $Uri - resource not found, skipping silently."
             }
             else {
@@ -110,6 +148,11 @@ function Invoke-GitHubApi {
                 $ex.InnerException -is [System.Net.Http.HttpRequestException]) {
             Write-Err "Network request failed. Check your internet connection."
             Write-Log "[ERROR] Network failure for $Uri - $($ex.Message)"
+            # Return cached response if available (offline resilience)
+            if ($cached -and $cached.Response) {
+                Write-Log "[API] Returning cached response after network failure for $Uri"
+                return $cached.Response
+            }
         }
         else {
             Write-Err "API request failed: $($ex.Message)"

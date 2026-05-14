@@ -1,5 +1,5 @@
 # ============================================================================
-# Group 1: Display Helpers - Color-coded console output and input functions
+# Group 1: Display Helpers - Color-coded console output, input, and shared utils
 # ============================================================================
 # Functions:
 #   Write-Banner        - Display ASCII art banner at startup
@@ -15,10 +15,14 @@
 #   Confirm-Action      - (y/n) confirmation prompt
 #   Wait-ForKey         - Press any key to continue
 #   Open-FolderInFileManager - Open folder in system file manager (cross-platform)
+#   Remove-TempDir      - Safely remove a temp directory (shared utility)
 #
 # All Write-* functions that log also guard against Write-Log not being loaded
 # yet (DisplayHelpers.ps1 is dot-sourced before Logging.ps1).
 # ============================================================================
+
+# ── Channel Constants ─────────────────────────────────────────────────────────
+$script:ValidChannels = @('stable', 'daily', 'experimental')
 
 function Write-Banner {
     <#
@@ -217,6 +221,10 @@ function Read-UserInput {
     # Expand leading ~ to home directory (Linux/Mac path shorthand)
     if ($userInput -match '^~[/\\]') { $userInput = $userInput -replace '^~', $HOME }
     elseif ($userInput -eq '~') { $userInput = $HOME }
+    # Strip trailing slashes/backslashes (common when pasting paths from Explorer)
+    if ($userInput -and $userInput.Length -gt 3) {
+        $userInput = $userInput.TrimEnd('\', '/')
+    }
     $result = $userInput ? $userInput : $Default
     if (Get-Command Write-Log -ErrorAction SilentlyContinue) {
         Write-Log "[INPUT] $Prompt`: $result"
@@ -227,17 +235,26 @@ function Read-UserInput {
 function Confirm-Action {
     <#
     .SYNOPSIS
-        (y/n) confirmation prompt. Returns $true for y/Y, $false for anything else.
+        Confirmation prompt. Returns $true for y/Y/Enter (when DefaultYes), $false for n/N.
     .PARAMETER Prompt
         The confirmation question to display.
+    .PARAMETER DefaultYes
+        If $true, pressing Enter without typing anything returns $true (Y is default).
     #>
     param(
-        [Parameter(Mandatory)][string]$Prompt
+        [Parameter(Mandatory)][string]$Prompt,
+        [switch]$DefaultYes
     )
     Write-Host ""
-    Write-Host "  $Prompt (y/n): " -NoNewline -ForegroundColor White
+    $hint = if ($DefaultYes) { '(Y/n)' } else { '(y/n)' }
+    Write-Host "  $Prompt $hint`: " -NoNewline -ForegroundColor White
     $response = (Read-Host).Trim()
-    $confirmed = $response -eq 'y' -or $response -eq 'Y'
+    $confirmed = if ($DefaultYes) {
+        # Default yes: empty or y/Y = true, n/N = false
+        -not ($response -eq 'n' -or $response -eq 'N')
+    } else {
+        $response -eq 'y' -or $response -eq 'Y'
+    }
     if (Get-Command Write-Log -ErrorAction SilentlyContinue) {
         $logValue = $confirmed ? 'yes' : 'no'
         Write-Log "[INPUT] Confirm '$Prompt': $logValue"
@@ -446,5 +463,24 @@ function Open-FolderInFileManager {
                 throw "No file manager found. Install xdg-utils or open manually: $Path"
             }
         }
+    }
+}
+
+# ── Shared Utility Functions ──────────────────────────────────────────────────
+
+function Remove-TempDir {
+    <#
+    .SYNOPSIS
+        Safely remove a temporary directory if it exists.
+    .PARAMETER Path
+        The directory path to remove. Handles $null gracefully.
+    #>
+    param([string]$Path)
+    if ($Path -and (Test-Path -LiteralPath $Path)) {
+        try {
+            $oldProgress = $ProgressPreference; $ProgressPreference = 'SilentlyContinue'
+            Remove-Item -LiteralPath $Path -Recurse -Force
+            $ProgressPreference = $oldProgress
+        } catch {}
     }
 }

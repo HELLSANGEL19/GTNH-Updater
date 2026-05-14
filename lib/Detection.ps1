@@ -272,9 +272,13 @@ function Get-InstalledGtnhVersion {
     if (Test-Path -LiteralPath $versionFile) {
         try {
             $content = (Get-Content -LiteralPath $versionFile -Raw -ErrorAction Stop).Trim()
-            # Validate it looks like a version (at least X.Y format)
+            # Validate it looks like a version (at least X.Y format or GTNH-date+build format)
             if ($content -and $content -match '^\d+\.\d+') {
                 return $content
+            }
+            # GTNH nightly updater format: GTNH-2026-05-01+490 -> convert to nightly-2026-05-01
+            if ($content -and $content -match '^GTNH-(\d{4}-\d{2}-\d{2})') {
+                return "nightly-$($Matches[1])"
             }
         }
         catch {

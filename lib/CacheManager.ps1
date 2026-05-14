@@ -43,10 +43,11 @@ function Get-CachedFile {
 function Invoke-CachePrune {
     <#
     .SYNOPSIS
-        Remove old cached files, keeping only the 5 most recent by write time.
+        Remove old cached files, keeping the most useful ones.
     .DESCRIPTION
-        Runs silently during startup. Prevents the cache folder from growing
-        indefinitely as users update through multiple versions.
+        Keeps the most recent file per category (server pack, client pack, config pack)
+        plus up to 3 additional recent files. This ensures switching between channels
+        doesn't evict the cache entry you need for the other channel.
     #>
 
     $cacheDir = $script:CacheDir
@@ -54,19 +55,46 @@ function Invoke-CachePrune {
         return
     }
 
-    $maxCachedFiles = 5
-    $cachedFiles = Get-ChildItem -LiteralPath $cacheDir -File | Sort-Object LastWriteTime -Descending
+    $cachedFiles = @(Get-ChildItem -LiteralPath $cacheDir -File | Sort-Object LastWriteTime -Descending)
+    if ($cachedFiles.Count -le 5) { return }
 
-    if ($cachedFiles.Count -gt $maxCachedFiles) {
-        $toDelete = $cachedFiles | Select-Object -Skip $maxCachedFiles
+    # Categorize files and keep the newest of each type
+    $keepFiles = @{}
+
+    foreach ($file in $cachedFiles) {
+        $category = if ($file.Name -match '_Server_') { 'server' }
+                    elseif ($file.Name -match 'Multi_mc_downloads|_Java_') { 'client' }
+                    elseif ($file.Name -match 'nightly|daily|experimental') { 'config' }
+                    else { 'other' }
+
+        $key = $category
+        if (-not $keepFiles.ContainsKey($key)) {
+            $keepFiles[$key] = $file.FullName
+        }
+    }
+
+    # Also keep the 3 most recent files regardless of category
+    $recentKeep = $cachedFiles | Select-Object -First 3 | ForEach-Object { $_.FullName }
+    foreach ($path in $recentKeep) { $keepFiles[$path] = $path }
+
+    # Build the full keep set
+    $keepSet = @{}
+    foreach ($val in $keepFiles.Values) { $keepSet[$val] = $true }
+
+    # Delete everything not in the keep set, but cap total at 8 files max
+    $maxTotal = 8
+    if ($cachedFiles.Count -gt $maxTotal) {
+        $toDelete = $cachedFiles | Where-Object { -not $keepSet.ContainsKey($_.FullName) } |
+            Select-Object -Skip 0  # all non-kept files
         foreach ($file in $toDelete) {
+            # Don't delete if we'd go below maxTotal
+            $remaining = @(Get-ChildItem -LiteralPath $cacheDir -File -ErrorAction SilentlyContinue).Count
+            if ($remaining -le $maxTotal) { break }
             try {
                 Remove-Item -LiteralPath $file.FullName -Force
-                Write-Log "[CACHE] Pruned old cached file: $($file.Name)"
+                Write-Log "[CACHE] Pruned: $($file.Name)"
             }
-            catch {
-                # Silently continue
-            }
+            catch {}
         }
     }
 }
@@ -174,23 +202,8 @@ function Invoke-StartupCleanup {
         }
     }
 
-    # Clean stale lock file (from a crash where finally didn't run)
-    $lockFile = Join-Path $script:ScriptDir '.gtnh-updater.lock'
-    if (Test-Path -LiteralPath $lockFile) {
-        try {
-            $lockPid = [int]((Get-Content -LiteralPath $lockFile -Raw -ErrorAction Stop).Trim())
-            $proc = Get-Process -Id $lockPid -ErrorAction SilentlyContinue
-            if (-not $proc) {
-                Remove-Item -LiteralPath $lockFile -Force
-                Write-Log "[CLEANUP] Removed stale lock file (PID $lockPid no longer running)"
-            }
-        }
-        catch {
-            # Lock file is corrupt - remove it
-            Remove-Item -LiteralPath $lockFile -Force -ErrorAction SilentlyContinue
-            Write-Log "[CLEANUP] Removed corrupt lock file"
-        }
-    }
+    # Clean stale lock file is no longer needed - we use FileStream locks now
+    # which are automatically released when the process exits.
 }
 
 function Invoke-CacheMenu {

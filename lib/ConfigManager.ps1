@@ -44,6 +44,7 @@ function New-DefaultConfig {
         ConfigVersion          = 2
         LastSeenScriptVersion  = ''
         ProfileLabel           = ''
+        LastUpdateTarget       = ''
     }
 }
 
@@ -237,7 +238,7 @@ function Show-CurrentConfig {
     Write-Info "Backup retention:     $($Config.BackupRetention ?? 5)"
     Write-Info "Server version:       $($Config.InstalledServerVersion ? $Config.InstalledServerVersion : '(unknown)')"
     Write-Info "Client version:       $($Config.InstalledClientVersion ? $Config.InstalledClientVersion : '(unknown)')"
-    Write-Info "Nightly updater ver:  $($Config.NightlyUpdaterVersion ? $Config.NightlyUpdaterVersion : '(not installed)')"
+    Write-Info "Daily updater ver:    (native - no external binary needed)"
     Write-Info "Custom server mods:   $($Config.CustomServerMods.Count) configured"
     Write-Info "Custom client mods:   $($Config.CustomClientMods.Count) configured"
     Write-Info "Config patches:       $($Config.ConfigPatches.Count) defined"
@@ -386,6 +387,11 @@ function Switch-Profile {
 
     # Clear cached data that may be stale for the new profile's settings
     $script:CachedWebsiteReleases = $null
+    $script:CachedLatestVersion = $null
+    $script:CachedLatestBeta = $null
+    $script:CachedLatestNightly = $null
+    $script:CachedNightlyLastUpdated = $null
+    $script:GitHubETagCache = @{}
 
     $config = Load-Config
     if ($null -ne $config) { $config = Repair-Config -Config $config }

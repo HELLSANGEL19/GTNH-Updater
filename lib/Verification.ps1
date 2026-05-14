@@ -24,10 +24,14 @@ function Invoke-Verification {
         The root path of the instance (server root or .minecraft for client).
     .PARAMETER Target
         The target type: 'server' or 'client'.
+    .PARAMETER Quick
+        If set, skips the deep mod-ID jar scan (faster for frequent daily updates).
+        Still performs filename-based duplicate detection.
     #>
     param(
         [Parameter(Mandatory)][string]$InstancePath,
-        [Parameter(Mandatory)][ValidateSet('server', 'client')][string]$Target
+        [Parameter(Mandatory)][ValidateSet('server', 'client')][string]$Target,
+        [switch]$Quick
     )
 
     $allPassed = $true
@@ -156,10 +160,12 @@ function Invoke-Verification {
 
     # Deep duplicate check: read mod IDs from mcmod.info inside jars
     # This catches cases where filenames are completely different but the mod ID is the same
-    if (Test-Path -LiteralPath $modsPath) {
+    # Skipped in Quick mode (nightly updates where the updater controls all mods)
+    if (-not $Quick -and (Test-Path -LiteralPath $modsPath)) {
         $modIdMap = @{}  # modId -> list of filenames
         $modJarsForId = Get-ChildItem -LiteralPath $modsPath -Filter '*.jar' -File | Where-Object { $_.Length -gt 0 }
         foreach ($jar in $modJarsForId) {
+            $zip = $null
             try {
                 $zip = [System.IO.Compression.ZipFile]::OpenRead($jar.FullName)
                 $mcmodEntry = $zip.Entries | Where-Object { $_.FullName -eq 'mcmod.info' } | Select-Object -First 1
@@ -174,9 +180,10 @@ function Invoke-Verification {
                         $modIdMap[$modId] += $jar.Name
                     }
                 }
-                $zip.Dispose()
             } catch {
                 # Skip jars that can't be read (corrupted, not a zip, etc.)
+            } finally {
+                if ($zip) { try { $zip.Dispose() } catch {} }
             }
         }
         $idDuplicates = $modIdMap.GetEnumerator() | Where-Object { $_.Value.Count -gt 1 }

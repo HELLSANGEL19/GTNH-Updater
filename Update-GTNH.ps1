@@ -6,12 +6,12 @@
 
 .DESCRIPTION
     A PowerShell 7+ script that automates updating GTNH server (AMP/CubeCoders) and
-    client (Prism Launcher) installations on Windows. Fully interactive and menu-driven
-    with no CLI flags. Supports three update channels (Stable, Daily, Experimental)
-    with beta/RC version support through the stable channel's version picker,
-    auto-detects instance paths and Java installations, preserves critical files across
-    updates, and provides config patching, custom mod management, preview-first updates,
-    download caching, backup management, and structured logging.
+    client (Prism Launcher) installations on Windows and Linux. Fully interactive and
+    menu-driven with no CLI flags. Supports three update channels (Stable, Daily,
+    Experimental) with beta/RC version support through the stable channel's version
+    picker, auto-detects instance paths and Java installations, preserves critical
+    files across updates, and provides config patching, custom mod management,
+    preview-first updates, download caching, backup management, and structured logging.
 
 .NOTES
     Requires PowerShell 7.0 or newer (pwsh).
@@ -104,52 +104,56 @@ if (Test-Path -LiteralPath $_dt) {
 # ENTRY POINT
 # ============================================================================
 
-# Prevent concurrent instances from corrupting config or instance files
+# Prevent concurrent instances from corrupting config or instance files.
+# Uses an exclusive FileStream lock - automatically released when the process
+# exits for ANY reason (clean quit, crash, terminal closed, killed).
 $script:LockFilePath = Join-Path $script:ScriptDir '.gtnh-updater.lock'
+$script:LockFileStream = $null
 
-function Test-LockFile {
-    if (-not (Test-Path -LiteralPath $script:LockFilePath)) { return $false }
+function Get-ExclusiveLock {
     try {
-        $lockContent = Get-Content -LiteralPath $script:LockFilePath -Raw -ErrorAction Stop
-        $lockPid = [int]($lockContent.Trim())
-        # Check if the process is still running
-        $proc = Get-Process -Id $lockPid -ErrorAction SilentlyContinue
-        return ($null -ne $proc)
+        $script:LockFileStream = [System.IO.File]::Open(
+            $script:LockFilePath,
+            [System.IO.FileMode]::OpenOrCreate,
+            [System.IO.FileAccess]::ReadWrite,
+            [System.IO.FileShare]::None
+        )
+        # Write PID for informational purposes (not used for lock detection)
+        $writer = [System.IO.StreamWriter]::new($script:LockFileStream)
+        $writer.Write($PID.ToString())
+        $writer.Flush()
+        return $true
     }
-    catch {
-        # Lock file is corrupt or unreadable - treat as stale
+    catch [System.IO.IOException] {
+        # File is locked by another process - another instance is running
         return $false
     }
-}
-
-function New-LockFile {
-    try {
-        $PID.ToString() | Set-Content -LiteralPath $script:LockFilePath -Encoding UTF8 -Force
-    }
     catch {
-        # Non-fatal: warn but continue (might be a read-only filesystem edge case)
+        # Non-fatal: warn but continue (read-only filesystem edge case)
         Write-Host "  [!] Could not create lock file. Concurrent runs are not protected." -ForegroundColor DarkYellow
+        return $true
     }
 }
 
-function Remove-LockFile {
+function Release-ExclusiveLock {
+    if ($script:LockFileStream) {
+        try { $script:LockFileStream.Dispose() } catch {}
+        $script:LockFileStream = $null
+    }
+    # Clean up the lock file on graceful exit
     if (Test-Path -LiteralPath $script:LockFilePath) {
         try { Remove-Item -LiteralPath $script:LockFilePath -Force } catch {}
     }
 }
 
-if (Test-LockFile) {
+if (-not (Get-ExclusiveLock)) {
     Write-Host ""
-    Write-Host "  [!] Another instance of GTNH Updater appears to be running." -ForegroundColor Red
-    Write-Host "  If this is wrong (e.g., a previous crash), delete:" -ForegroundColor DarkYellow
-    Write-Host "  $($script:LockFilePath)" -ForegroundColor Gray
+    Write-Host "  [!] Another instance of GTNH Updater is already running." -ForegroundColor Red
     Write-Host ""
     Write-Host "  Press any key to exit..." -ForegroundColor DarkGray
     $null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
     exit 1
 }
-
-New-LockFile
 
 try {
     Invoke-MainLoop
@@ -166,5 +170,5 @@ catch {
     exit 1
 }
 finally {
-    Remove-LockFile
+    Release-ExclusiveLock
 }

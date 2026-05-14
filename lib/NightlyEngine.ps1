@@ -115,7 +115,96 @@ function Invoke-NightlyUpdate {
         if ([string]::IsNullOrEmpty($currentVersion)) { $currentVersion = '' }
     }
 
-    if ($currentVersion -eq $versionLabel) {
+    # ── Step 3: Compute mod diff and show update plan ───────────────────────
+    # Detect stable-to-nightly transition: only trigger if the current version looks
+    # like a pure stable release (X.Y.Z with no nightly/daily/date indicators)
+    $isTransition = $false
+    if ([string]::IsNullOrEmpty($currentVersion)) {
+        # No version recorded - check if mods/ has content to decide
+        $modsDir = Join-Path $instancePath 'mods'
+        $hasExistingMods = (Test-Path -LiteralPath $modsDir) -and
+            @(Get-ChildItem -LiteralPath $modsDir -Filter '*.jar' -File -ErrorAction SilentlyContinue).Count -gt 10
+        if ($hasExistingMods) {
+            # Has mods but no version - assume stable, trigger transition
+            Write-Info "No version recorded but mods exist. Treating as stable-to-daily transition."
+            $isTransition = $true
+        }
+        # If no mods either, it's a fresh install - no transition needed, just download everything
+    } elseif (-not [string]::IsNullOrEmpty($currentVersion)) {
+        $looksLikeNightly = $currentVersion -match 'nightly|daily|experimental|\d{4}-\d{2}-\d{2}'
+        $looksLikePreRelease = $currentVersion -match '[-_](beta|rc|pre|alpha)'
+        # Only transition if it's a clean stable version (not nightly, not pre-release)
+        # Pre-release/beta versions are close enough to nightly that a full wipe isn't needed
+        $isTransition = -not $looksLikeNightly -and -not $looksLikePreRelease
+    }
+    Write-Log "[NIGHTLY] Version check: current='$currentVersion' target='$versionLabel' isTransition=$isTransition"
+
+    # Validate nightly state matches reality: if the state says we're on a nightly
+    # but the mods on disk don't match (user manually restored files), force a transition
+    if (-not $isTransition -and $state -and $state.ManifestMods) {
+        $modsDir = Join-Path $instancePath 'mods'
+        if (Test-Path -LiteralPath $modsDir) {
+            $stateModCount = @($state.ManifestMods.PSObject.Properties).Count
+            if ($stateModCount -gt 0) {
+                # Spot-check: verify at least 50% of the state's mods exist on disk
+                $foundCount = 0
+                $checkCount = [math]::Min(20, $stateModCount)
+                $sampled = @($state.ManifestMods.PSObject.Properties | Select-Object -First $checkCount)
+                foreach ($prop in $sampled) {
+                    if (Test-Path -LiteralPath (Join-Path $modsDir $prop.Value)) {
+                        $foundCount++
+                    }
+                }
+                $matchRatio = $foundCount / $checkCount
+                if ($matchRatio -lt 0.5) {
+                    Write-Warn "Mods on disk don't match the recorded state."
+                    Write-Info "It looks like files were restored or replaced outside the updater."
+                    Write-Info "A clean transition will be performed."
+                    Write-Host ""
+                    $isTransition = $true
+                    # Clear stale state so it doesn't confuse future runs
+                    $state = $null
+                    $currentVersion = ''
+                    $statePath = Join-Path $instancePath '.gtnh-nightly-state.json'
+                    if (Test-Path -LiteralPath $statePath) {
+                        Remove-Item -LiteralPath $statePath -Force -ErrorAction SilentlyContinue
+                    }
+                }
+            }
+        }
+    }
+
+    # Second check: config says nightly but no state file exists (or state has no mod tracking)
+    # Verify by checking if a few manifest mods are actually present on disk
+    if (-not $isTransition -and (-not $state -or -not $state.ManifestMods -or @($state.ManifestMods.PSObject.Properties).Count -eq 0) -and $currentVersion -match 'nightly|daily|experimental|\d{4}-\d{2}-\d{2}') {
+        $modsDir = Join-Path $instancePath 'mods'
+        if (Test-Path -LiteralPath $modsDir) {
+            # Spot-check a few mods from the current manifest against disk
+            $manifestCheckCount = 0
+            $manifestFoundCount = 0
+            $checkMods = @($manifest.github_mods.PSObject.Properties | Select-Object -First 10)
+            foreach ($prop in $checkMods) {
+                $modSide = $prop.Value.side.ToUpper()
+                $targetSide = $Target.ToUpper()
+                if ($modSide -ne 'BOTH' -and $modSide -ne $targetSide) { continue }
+                $expectedFile = "$($prop.Name)-$($prop.Value.version).jar"
+                $manifestCheckCount++
+                if (Test-Path -LiteralPath (Join-Path $modsDir $expectedFile)) {
+                    $manifestFoundCount++
+                }
+            }
+            if ($manifestCheckCount -gt 0 -and ($manifestFoundCount / $manifestCheckCount) -lt 0.3) {
+                Write-Warn "Instance appears to have been restored to a non-daily state."
+                Write-Info "A clean transition will be performed."
+                Write-Host ""
+                $isTransition = $true
+                $currentVersion = ''
+            }
+        }
+    }
+
+    # "Already on this version" check - only if we haven't detected a state mismatch
+    if (-not $isTransition -and $currentVersion -eq $versionLabel) {
         Write-Info "Already on $versionLabel."
         Write-Host ""
         if (-not (Confirm-Action "Re-apply this version anyway? (will re-download changed mods)")) {
@@ -124,19 +213,7 @@ function Invoke-NightlyUpdate {
         }
     }
 
-    # ── Step 3: Compute mod diff and show update plan ───────────────────────
-    # Detect stable-to-nightly transition: only trigger if the current version looks
-    # like a pure stable release (X.Y.Z with no nightly/daily/date indicators)
-    $isTransition = $false
-    if (-not [string]::IsNullOrEmpty($currentVersion)) {
-        $looksLikeNightly = $currentVersion -match 'nightly|daily|experimental|\d{4}-\d{2}-\d{2}'
-        $looksLikePreRelease = $currentVersion -match '[-_](beta|rc|pre|alpha)'
-        # Only transition if it's a clean stable version (not nightly, not pre-release)
-        # Pre-release/beta versions are close enough to nightly that a full wipe isn't needed
-        $isTransition = -not $looksLikeNightly -and -not $looksLikePreRelease
-    }
-
-    # Compute the mod diff early so we can show it in the plan (skip for transitions — everything is new)
+    # Compute the mod diff early so we can show it in the plan (skip for transitions -- everything is new)
     $precomputedDiff = $null
     if (-not $isTransition) {
         $precomputedDiff = Compare-ModsWithManifest -Manifest $manifest -InstancePath $instancePath `
@@ -152,6 +229,38 @@ function Invoke-NightlyUpdate {
     }
 
     # ── Step 4: Full instance backup (if enabled) ─────────────────────────────
+    # Auto-detect config changes before they get overwritten (only on subsequent updates)
+    $baselinePath = Join-Path $instancePath '.gtnh-config-baseline.zip'
+    $hasBaseline = Test-Path -LiteralPath $baselinePath
+    $patchCount = @($Config.ConfigPatches | Where-Object { $_.Target -eq $Target -or $_.Target -eq 'both' }).Count
+
+    if ($hasBaseline -and -not $isTransition) {
+        # Baseline exists from a previous update - detect user changes
+        Write-Step "Checking for config changes..."
+        try {
+            $detectedCount = Invoke-ConfigDiffDetection `
+                -BaselineZipPath $baselinePath `
+                -InstancePath    $instancePath `
+                -Config          $Config `
+                -Target          $Target
+            if ($detectedCount -gt 0) {
+                Write-Success "$detectedCount config change(s) saved as patches (will be re-applied after every update)"
+            }
+        } catch {
+            Write-Log "[NIGHTLY] Config diff detection failed (non-fatal): $($_.Exception.Message)"
+        }
+    }
+    elseif (-not $hasBaseline -and -not $isTransition -and $patchCount -eq 0) {
+        # First update with this tool - warn about config reset
+        Write-Host ""
+        Write-Warn "This is your first update with this tool for $Target."
+        Write-Info "Any config changes you've made (like disabling pollution) will be"
+        Write-Info "reset to pack defaults. After this update, use:"
+        Write-Info "  Settings > Config Patches > Re-scan"
+        Write-Info "to detect and save your changes for future updates."
+        Write-Host ""
+    }
+
     $backupOk = Invoke-FullInstanceBackup -Config $Config -InstancePath $instancePath -Target $Target -Silent
     if ($backupOk -eq $false) {
         Write-Err "Backup failed. Update cancelled for safety."
@@ -164,6 +273,33 @@ function Invoke-NightlyUpdate {
     try {
 
     # ── Step 5: Rollback snapshot ─────────────────────────────────────────────
+    # Pre-flight: check available disk space before creating snapshot
+    try {
+        $instanceDrive = (Get-Item -LiteralPath $instancePath).PSDrive
+        $freeBytes = $instanceDrive.Free
+        # Quick size estimate: count mods and multiply by average mod size (~5MB)
+        # This avoids the slow recursive Get-ChildItem on large mod folders
+        $modsDir = Join-Path $instancePath 'mods'
+        $modCount = if (Test-Path -LiteralPath $modsDir) {
+            @(Get-ChildItem -LiteralPath $modsDir -Filter '*.jar' -File -ErrorAction SilentlyContinue).Count
+        } else { 0 }
+        $estimatedSize = $modCount * 5MB + 50MB  # mods + config/resources/scripts estimate
+        # Need roughly 2x the instance size (snapshot + download headroom)
+        $requiredSpace = $estimatedSize * 2
+        if ($freeBytes -gt 0 -and $requiredSpace -gt 0 -and $freeBytes -lt $requiredSpace) {
+            $freeMB = [math]::Round($freeBytes / 1MB)
+            $neededMB = [math]::Round($requiredSpace / 1MB)
+            Write-Warn "Low disk space: ${freeMB} MB free, estimated ${neededMB} MB needed."
+            Write-Warn "The update may fail partway through if disk fills up."
+            if (-not (Confirm-Action "Continue anyway?")) {
+                Write-Info "Update cancelled. Free up disk space and try again."
+                return
+            }
+        }
+    } catch {
+        Write-Log "[NIGHTLY] Disk space check failed (non-fatal): $($_.Exception.Message)"
+    }
+
     Write-Step "Saving rollback snapshot..."
     $nightlyFoldersToSnapshot = @('mods', 'config', 'resources', 'scripts')
     $nightlyRollbackDir = Join-Path $script:TempDir "rollback-nightly-${Target}"
@@ -171,13 +307,51 @@ function Invoke-NightlyUpdate {
     New-Item -Path $nightlyRollbackDir -ItemType Directory -Force | Out-Null
 
     try {
-        foreach ($folder in $nightlyFoldersToSnapshot) {
-            $sourcePath = Join-Path $instancePath $folder
-            if (Test-Path -LiteralPath $sourcePath) {
-                Copy-Item -LiteralPath $sourcePath -Destination (Join-Path $nightlyRollbackDir $folder) -Recurse -Force
+        if (-not $isTransition -and $precomputedDiff) {
+            # SELECTIVE SNAPSHOT: Only back up files that will actually change.
+            # For incremental updates this is much faster than copying all 300+ mods.
+
+            # Mark this as a selective snapshot so rollback knows to restore files individually
+            New-Item -Path (Join-Path $nightlyRollbackDir '.selective-snapshot') -ItemType File -Force | Out-Null
+
+            # Always snapshot config/ and scripts/ fully (config zip replaces them entirely)
+            foreach ($folder in @('config', 'resources', 'scripts')) {
+                $sourcePath = Join-Path $instancePath $folder
+                if (Test-Path -LiteralPath $sourcePath) {
+                    Copy-Item -LiteralPath $sourcePath -Destination (Join-Path $nightlyRollbackDir $folder) -Recurse -Force
+                }
             }
+
+            # For mods/, only snapshot files that will be removed or replaced
+            $modsSnapshotDir = Join-Path $nightlyRollbackDir 'mods'
+            New-Item -Path $modsSnapshotDir -ItemType Directory -Force | Out-Null
+
+            # Save the current mods file list so rollback can detect newly-added files
+            $modsDir = Join-Path $instancePath 'mods'
+            if (Test-Path -LiteralPath $modsDir) {
+                $currentModNames = @(Get-ChildItem -LiteralPath $modsDir -Filter '*.jar' -File -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
+                $currentModNames | Set-Content -LiteralPath (Join-Path $nightlyRollbackDir '.mods-before-update.txt') -Force
+            }
+
+            foreach ($filePath in $precomputedDiff.ToRemove) {
+                if (Test-Path -LiteralPath $filePath) {
+                    $destPath = Join-Path $modsSnapshotDir (Split-Path -Leaf $filePath)
+                    Copy-Item -LiteralPath $filePath -Destination $destPath -Force
+                }
+            }
+            $snappedModCount = $precomputedDiff.ToRemove.Count
+            Write-Success "Snapshot saved (selective: $snappedModCount mod(s) + config/scripts)."
         }
-        Write-Success "Snapshot saved."
+        else {
+            # FULL SNAPSHOT: Transition or no diff available — copy everything
+            foreach ($folder in $nightlyFoldersToSnapshot) {
+                $sourcePath = Join-Path $instancePath $folder
+                if (Test-Path -LiteralPath $sourcePath) {
+                    Copy-Item -LiteralPath $sourcePath -Destination (Join-Path $nightlyRollbackDir $folder) -Recurse -Force
+                }
+            }
+            Write-Success "Snapshot saved."
+        }
     }
     catch {
         Write-Warn "Could not save rollback snapshot: $($_.Exception.Message)"
@@ -198,7 +372,7 @@ function Invoke-NightlyUpdate {
     # ── Step 7: Handle stable-to-nightly transition ─────────────────────────────
     if ($isTransition) {
         Write-Step "Transitioning from stable to $Channel..."
-        Write-Info "Clearing mods, config, and scripts for clean nightly install..."
+        Write-Info "Clearing mods, config, and scripts for clean $Channel install..."
 
         $modsDir = Join-Path $instancePath 'mods'
         $configDir = Join-Path $instancePath 'config'
@@ -233,10 +407,25 @@ function Invoke-NightlyUpdate {
         }
 
         # Restore custom mods from temp (not from rollback -- rollback may be null)
+        # Skip any custom mods that are also in the manifest (the manifest version supersedes)
         if (Test-Path -LiteralPath $customModTempDir) {
+            # Build a set of manifest mod base names to detect conflicts
+            $manifestBaseNames = @{}
+            foreach ($prop in $manifest.github_mods.PSObject.Properties) {
+                $manifestBaseNames[(Get-ModBaseName -FileName "$($prop.Name)-$($prop.Value.version).jar")] = $prop.Name
+            }
+
             $savedCustom = Get-ChildItem -LiteralPath $customModTempDir -Filter '*.jar' -File -ErrorAction SilentlyContinue
             $restoredCustomCount = 0
+            $skippedConflicts = @()
             foreach ($cm in $savedCustom) {
+                $cmBase = Get-ModBaseName -FileName $cm.Name
+                if ($manifestBaseNames.ContainsKey($cmBase)) {
+                    # This custom mod conflicts with a manifest mod - skip it
+                    $skippedConflicts += $cm.Name
+                    Write-Log "[NIGHTLY] Skipping custom mod '$($cm.Name)' - superseded by manifest mod '$($manifestBaseNames[$cmBase])'"
+                    continue
+                }
                 $destPath = Join-Path $modsDir $cm.Name
                 Copy-Item -LiteralPath $cm.FullName -Destination $destPath -Force
                 $restoredCustomCount++
@@ -245,10 +434,17 @@ function Invoke-NightlyUpdate {
             if ($restoredCustomCount -gt 0) {
                 Write-Info "Preserved $restoredCustomCount custom mod(s)"
             }
+            if ($skippedConflicts.Count -gt 0) {
+                Write-Warn "$($skippedConflicts.Count) custom mod(s) skipped (newer version in $Channel pack):"
+                foreach ($sc in $skippedConflicts) {
+                    Write-Info "  $sc"
+                }
+                Write-Info "Remove these from Settings > Custom Mods if you want the pack version."
+            }
             Remove-Item -LiteralPath $customModTempDir -Recurse -Force -ErrorAction SilentlyContinue
         }
 
-        Write-Success "Cleared for fresh nightly install."
+        Write-Success "Cleared for fresh $Channel install."
     }
 
     # ── Step 8: Sync mods ─────────────────────────────────────────────────────
@@ -269,11 +465,8 @@ function Invoke-NightlyUpdate {
     # ── Step 9: Sync configs ──────────────────────────────────────────────────
     Write-Step "Syncing configs..."
 
-    # Make manifest available to config sync so it can skip Maven mods from the zip
-    $script:LastNightlyManifest = $manifest
-
     $configSyncOk = Invoke-NightlyConfigSync -ConfigTag $configTag -InstancePath $instancePath `
-        -ReleaseInfo $releaseInfo
+        -ReleaseInfo $releaseInfo -Manifest $manifest
 
     if (-not $configSyncOk) {
         Write-Err "Config sync failed. Mods were updated but configs may be missing/outdated."
@@ -317,7 +510,7 @@ function Invoke-NightlyUpdate {
         $assetsUrl = 'https://raw.githubusercontent.com/GTNewHorizons/DreamAssemblerXXL/refs/heads/master/gtnh-assets.json'
         $gtnhAssets = $null
         try {
-            $gtnhAssets = Invoke-RestMethod -Uri $assetsUrl -UserAgent 'GTNH-Updater-Script' -ErrorAction Stop
+            $gtnhAssets = Invoke-RestMethod -Uri $assetsUrl -UserAgent 'GTNH-Updater-Script' -TimeoutSec 30 -ErrorAction Stop
             Write-Log "[NIGHTLY] Fetched gtnh-assets.json ($($gtnhAssets.mods.Count) mods)"
         }
         catch {
@@ -380,14 +573,14 @@ function Invoke-NightlyUpdate {
                 }
             }
 
-            # Second pass: download with progress indicator
+            # Second pass: download in parallel with progress indicator
             $extTotal = $extModsToDownload.Count
             if ($extTotal -gt 0) {
                 Write-Info "Downloading $extTotal external mod(s)..."
-                $extProgress = 0
 
-                foreach ($extMod in $extModsToDownload) {
-                    Write-Log "[NIGHTLY] External mod download: $($extMod.Name) -> $($extMod.Url)"
+                $extDownloadResults = $extModsToDownload | ForEach-Object -ThrottleLimit $script:MaxParallelDownloads -Parallel {
+                    $extMod = $_
+                    $destModsDir = $using:modsDir
                     $httpClient = $null
                     try {
                         $httpClient = [System.Net.Http.HttpClient]::new()
@@ -396,35 +589,43 @@ function Invoke-NightlyUpdate {
                         $modBytes = $httpClient.GetByteArrayAsync($extMod.Url).Result
                         if ($modBytes -and $modBytes.Length -gt 1024) {
                             # Remove old versions of this mod before writing new one
-                            $oldVersions = Get-ChildItem -LiteralPath $modsDir -Filter "$($extMod.CheckName)-*.jar" -File -ErrorAction SilentlyContinue
+                            $oldVersions = Get-ChildItem -LiteralPath $destModsDir -Filter "$($extMod.CheckName)-*.jar" -File -ErrorAction SilentlyContinue
                             foreach ($old in $oldVersions) {
                                 Remove-Item -LiteralPath $old.FullName -Force -ErrorAction SilentlyContinue
                             }
-                            $destPath = Join-Path $modsDir $extMod.FileName
+                            $destPath = Join-Path $destModsDir $extMod.FileName
                             [System.IO.File]::WriteAllBytes($destPath, $modBytes)
-                            $extDownloaded++
+                            return @{ Name = $extMod.Name; Success = $true }
                         } else {
-                            Write-Warn "  Download too small for $($extMod.Name) (got $($modBytes.Length) bytes)"
-                            $extFailed++
+                            return @{ Name = $extMod.Name; Success = $false; Error = "Download too small ($($modBytes.Length) bytes)" }
                         }
                     }
                     catch {
-                        Write-Warn "  Failed: $($extMod.Name) - $($_.Exception.Message)"
-                        $extFailed++
+                        return @{ Name = $extMod.Name; Success = $false; Error = $_.Exception.Message }
                     }
                     finally {
                         if ($httpClient) { try { $httpClient.Dispose() } catch {} }
                     }
+                }
 
-                    # Update progress indicator
+                # Process results and show progress
+                $extProgress = 0
+                foreach ($result in $extDownloadResults) {
+                    if ($result.Success) {
+                        $extDownloaded++
+                    } else {
+                        Write-Warn "  Failed: $($result.Name) - $($result.Error)"
+                        Write-Log "[NIGHTLY] External mod download failed: $($result.Name) - $($result.Error)"
+                        $extFailed++
+                    }
                     $extProgress++
                     $percent = [math]::Floor(($extProgress / $extTotal) * 100)
                     $bar = ('█' * [math]::Floor($percent / 2)).PadRight(50, '░')
-                    Write-Host "`r  [$bar] ${percent}%  ${extProgress}/${extTotal} external mods" -NoNewline -ForegroundColor Gray
+                    Write-Host "`r$("  [$bar] ${percent}%  ${extProgress}/${extTotal} external mods".PadRight(80))" -NoNewline -ForegroundColor Gray
                 }
 
                 # Clear progress line
-                Write-Host "`r$(' ' * 75)`r" -NoNewline
+                Write-Host "`r$(' ' * 85)`r" -NoNewline
                 Write-Host ""
 
                 if ($extDownloaded -gt 0) {
@@ -451,12 +652,13 @@ function Invoke-NightlyUpdate {
 
     # ── Step 12: Run verification ─────────────────────────────────────────────
     Write-Step "Running verification..."
-    Invoke-Verification -InstancePath $instancePath -Target $Target
+    Invoke-Verification -InstancePath $instancePath -Target $Target -Quick
 
     # ── Step 13: Record history + save state ──────────────────────────────────
     Write-Step "Recording update..."
 
-    Add-UpdateHistoryEntry -Config $Config -Version $versionLabel -Channel $Channel -Target $Target
+    Add-UpdateHistoryEntry -Config $Config -Version $versionLabel -Channel $Channel -Target $Target `
+        -Details "+$($modSyncResult.Downloaded) -$($modSyncResult.Removed) ~$($modSyncResult.Unchanged)"
 
     if ($Target -eq 'server') { $Config.InstalledServerVersion = $versionLabel }
     else { $Config.InstalledClientVersion = $versionLabel }
@@ -664,18 +866,25 @@ function Compare-ModsWithManifest {
         $overrideMods = @($Target -eq 'server' ? ($Config.OverrideServerMods ?? @()) : ($Config.OverrideClientMods ?? @()))
     }
 
-    # Build a set of protected filenames (custom mods that should never be removed)
+    # Build a set of protected BASE NAMES (custom mods that should never be removed)
+    # Using base names instead of exact filenames handles the case where a user
+    # manually updates their custom mod (e.g., MyMod-1.0.jar -> MyMod-1.1.jar)
+    $protectedBaseNames = @{}
     $protectedFiles = @{}
     foreach ($cm in $customMods) {
         $protectedFiles[$cm] = 'custom'
+        $baseName = Get-ModBaseName -FileName $cm
+        $protectedBaseNames[$baseName] = 'custom'
     }
 
     # Build a set of overridden mod base names (mods the user replaces with their own version)
     $overriddenBaseNames = @{}
+    $overrideSkippedMods = @()  # Track which manifest mods were skipped due to override
     foreach ($om in $overrideMods) {
         $baseName = Get-ModBaseName -FileName $om
         $overriddenBaseNames[$baseName] = $om
         $protectedFiles[$om] = 'override'
+        $protectedBaseNames[$baseName] = 'override'
     }
 
     # ── Build the expected mod list from manifest (filter by side) ─────────────
@@ -696,6 +905,12 @@ function Compare-ModsWithManifest {
             $modBaseName = Get-ModBaseName -FileName $expectedFileName
             if ($overriddenBaseNames.ContainsKey($modBaseName)) {
                 $skippedMods += $modName
+                # Track the version conflict for user notification
+                $overrideSkippedMods += [PSCustomObject]@{
+                    ModName     = $modName
+                    PackVersion = $modInfo.version
+                    YourFile    = $overriddenBaseNames[$modBaseName]
+                }
                 Write-Log "[NIGHTLY] Skipping overridden mod: $modName (user has: $($overriddenBaseNames[$modBaseName]))"
                 continue
             }
@@ -779,11 +994,26 @@ function Compare-ModsWithManifest {
         }
     }
 
+    # Pre-compute base name -> expected filename lookup for O(1) removal detection
+    # (avoids O(n*m) nested loop with 300+ mods on each side)
+    $expectedBaseNameLookup = @{}
+    foreach ($modName in $expectedMods.Keys) {
+        if ($expectedMods[$modName].Source -eq 'external') { continue }
+        if (-not $expectedMods[$modName].FileName) { continue }
+        $baseName = Get-ModBaseName -FileName $expectedMods[$modName].FileName
+        $expectedBaseNameLookup[$baseName] = $expectedMods[$modName].FileName
+    }
+
     foreach ($jar in $currentJars) {
         $jarName = $jar.Name
 
-        # Never remove protected files (custom mods, override mods)
+        # Never remove protected files (custom mods, override mods) — match by base name
+        # so that version-bumped custom mods are still protected
         if ($protectedFiles.ContainsKey($jarName)) {
+            continue
+        }
+        $jarBaseName = Get-ModBaseName -FileName $jarName
+        if ($protectedBaseNames.ContainsKey($jarBaseName)) {
             continue
         }
 
@@ -792,13 +1022,11 @@ function Compare-ModsWithManifest {
             continue
         }
 
-        # Check if it's an old version of a manifest mod (only for maven mods with known filenames)
-        foreach ($modName in $expectedMods.Keys) {
-            if ($expectedMods[$modName].Source -eq 'external') { continue }
-            if (-not $expectedMods[$modName].FileName) { continue }
-            if ($jarName -like "${modName}-*.jar" -and $jarName -ne $expectedMods[$modName].FileName) {
+        # Check if it's an old version of a manifest mod using pre-computed base name lookup (O(1))
+        if ($expectedBaseNameLookup.ContainsKey($jarBaseName)) {
+            $expectedFile = $expectedBaseNameLookup[$jarBaseName]
+            if ($jarName -ne $expectedFile) {
                 $toRemove += $jar.FullName
-                break
             }
         }
     }
@@ -818,11 +1046,12 @@ function Compare-ModsWithManifest {
     }
 
     return [PSCustomObject]@{
-        ToDownload = $toDownload
-        ToRemove   = @($toRemove | Select-Object -Unique)
-        Unchanged  = $unchanged
-        Expected   = $expectedMods
-        Skipped    = $skippedMods
+        ToDownload       = $toDownload
+        ToRemove         = @($toRemove | Select-Object -Unique)
+        Unchanged        = $unchanged
+        Expected         = $expectedMods
+        Skipped          = $skippedMods
+        OverrideConflicts = $overrideSkippedMods
     }
 }
 
@@ -1002,8 +1231,18 @@ function Invoke-NightlyModSync {
         }
 
         # Clear the progress bar line and move to next line
-        Write-Host "`r$(' ' * 75)`r" -NoNewline
+        Write-Host "`r$(' ' * 85)`r" -NoNewline
         Write-Host ""
+
+        # Log all results (parallel blocks can't access Write-Log)
+        if ($successCount -gt 0) {
+            Write-Log "[NIGHTLY] Parallel download: $successCount mod(s) succeeded"
+        }
+        if ($failCount -gt 0) {
+            foreach ($failed in $failedMods) {
+                Write-Log "[NIGHTLY] Download failed: $($failed.ModName) v$($failed.Version) - $($failed.Error)"
+            }
+        }
 
         if ($failCount -gt 0) {
             Write-Warn "$failCount mod(s) failed from Maven. Retrying from GitHub..."
@@ -1011,7 +1250,7 @@ function Invoke-NightlyModSync {
             # Fallback: use gtnh-assets.json browser_download_url (same as Caedis)
             $fallbackAssets = $null
             try {
-                $fallbackAssets = Invoke-RestMethod -Uri 'https://raw.githubusercontent.com/GTNewHorizons/DreamAssemblerXXL/refs/heads/master/gtnh-assets.json' -UserAgent 'GTNH-Updater-Script' -ErrorAction Stop
+                $fallbackAssets = Invoke-RestMethod -Uri 'https://raw.githubusercontent.com/GTNewHorizons/DreamAssemblerXXL/refs/heads/master/gtnh-assets.json' -UserAgent 'GTNH-Updater-Script' -TimeoutSec 30 -ErrorAction Stop
             } catch { }
 
             foreach ($failed in $failedMods) {
@@ -1162,6 +1401,7 @@ function Invoke-NightlyModSync {
                     Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
                     $zip = [System.IO.Compression.ZipFile]::OpenRead($multimcZipPath)
 
+                    try {
                     # Collect directory names from the zip
                     $zipDirNames = @()
                     foreach ($entry in $zip.Entries) {
@@ -1196,7 +1436,9 @@ function Invoke-NightlyModSync {
                         $fileStream.Dispose()
                         $entryStream.Dispose()
                     }
-                    $zip.Dispose()
+                    } finally {
+                        $zip.Dispose()
+                    }
 
                     # Remove any old lwjgl3ify forgePatches jars that don't match current version
                     $libDir = Join-Path $instanceRoot 'libraries'
@@ -1244,7 +1486,7 @@ function Invoke-NightlyModSync {
     # Build installed mods tracking map (modName -> fileName)
     $installedMods = @{}
     foreach ($modName in $diff.Expected.Keys) {
-        if ($diff.Expected[$modName].Source -ne 'external' -and $diff.Expected[$modName].FileName) {
+        if ($diff.Expected[$modName].FileName) {
             $installedMods[$modName] = $diff.Expected[$modName].FileName
         }
     }
@@ -1276,13 +1518,16 @@ function Invoke-NightlyConfigSync {
         Path to the game instance.
     .PARAMETER ReleaseInfo
         Release info object with ZipUrl.
+    .PARAMETER Manifest
+        The parsed manifest object (used to identify Maven mods to skip from the zip).
     .OUTPUTS
         $true on success, $false on failure.
     #>
     param(
         [Parameter(Mandatory)][string]$ConfigTag,
         [Parameter(Mandatory)][string]$InstancePath,
-        [PSCustomObject]$ReleaseInfo
+        [PSCustomObject]$ReleaseInfo,
+        [PSCustomObject]$Manifest
     )
 
     if (-not $ReleaseInfo -or [string]::IsNullOrEmpty($ReleaseInfo.ZipUrl)) {
@@ -1324,6 +1569,16 @@ function Invoke-NightlyConfigSync {
     catch {
         Write-Err "Could not validate config pack: $($_.Exception.Message)"
         return $false
+    }
+
+    # Save a copy as the config baseline for future config diff scans (avoids re-downloading)
+    $baselinePath = Join-Path $InstancePath '.gtnh-config-baseline.zip'
+    try {
+        Copy-Item -LiteralPath $zipPath -Destination $baselinePath -Force
+        Write-Log "[NIGHTLY] Config baseline saved: $baselinePath"
+    } catch {
+        Write-Log "[NIGHTLY] Could not save config baseline: $($_.Exception.Message)"
+        # Non-fatal - config diff will fall back to downloading
     }
 
     # Extract the zip
@@ -1399,8 +1654,8 @@ function Invoke-NightlyConfigSync {
 
             # Build Maven mod prefixes to skip
             $mavenPrefixes = @()
-            if ($script:LastNightlyManifest -and $script:LastNightlyManifest.github_mods) {
-                foreach ($prop in $script:LastNightlyManifest.github_mods.PSObject.Properties) {
+            if ($Manifest -and $Manifest.github_mods) {
+                foreach ($prop in $Manifest.github_mods.PSObject.Properties) {
                     $mavenPrefixes += "$($prop.Name)-"
                 }
             }
@@ -1496,8 +1751,8 @@ function Invoke-NightlyConfigSync {
         # Maven mods are named "<ModName>-<version>.jar" so we check if the jar
         # starts with any known github_mod name followed by a dash
         $mavenModPrefixes = @()
-        if ($script:LastNightlyManifest -and $script:LastNightlyManifest.github_mods) {
-            foreach ($prop in $script:LastNightlyManifest.github_mods.PSObject.Properties) {
+        if ($Manifest -and $Manifest.github_mods) {
+            foreach ($prop in $Manifest.github_mods.PSObject.Properties) {
                 $mavenModPrefixes += "$($prop.Name)-"
             }
         }
@@ -1623,7 +1878,7 @@ function Save-NightlyState {
         Write-Log "[NIGHTLY] State saved: $statePath"
     }
     catch {
-        Write-Warn "Could not save nightly state: $($_.Exception.Message)"
+        Write-Warn "Could not save update state: $($_.Exception.Message)"
         if (Test-Path -LiteralPath $tempPath) {
             try { Remove-Item -LiteralPath $tempPath -Force } catch {}
         }
@@ -1661,7 +1916,7 @@ function Show-NightlyUpdatePlan {
     Write-Host "  Channel:  " -NoNewline -ForegroundColor Gray
     Write-Host "$($Channel.ToUpper())" -ForegroundColor Cyan
     Write-Host "  Current:  " -NoNewline -ForegroundColor Gray
-    Write-Host "$(if ($CurrentVersion) { $CurrentVersion } else { '(none/unknown)' })" -ForegroundColor Yellow
+    Write-Host "$(if ($CurrentVersion) { $CurrentVersion } else { '(none/unknown)' })" -ForegroundColor White
     Write-Host "  Target:   " -NoNewline -ForegroundColor Gray
     Write-Host "$VersionLabel" -ForegroundColor Green
     Write-Host "  Instance: " -NoNewline -ForegroundColor Gray
@@ -1693,40 +1948,76 @@ function Show-NightlyUpdatePlan {
         $unchangedCount = $ModDiff.Unchanged.Count
         $skippedCount = $ModDiff.Skipped.Count
 
+        # Calculate truly removed count (excluding mods that are just being updated)
+        $updatingBaseNames = @{}
+        foreach ($mod in $ModDiff.ToDownload) {
+            $baseName = Get-ModBaseName -FileName $mod.FileName
+            $updatingBaseNames[$baseName] = $true
+        }
+        $trulyRemovedCount = 0
+        foreach ($filePath in $ModDiff.ToRemove) {
+            $fn = Split-Path -Leaf $filePath
+            $baseName = Get-ModBaseName -FileName $fn
+            if (-not $updatingBaseNames.ContainsKey($baseName)) { $trulyRemovedCount++ }
+        }
+
         Write-Host ""
         Write-Host "  Changes:  " -NoNewline -ForegroundColor Gray
         $changeParts = @()
         if ($downloadCount -gt 0) { $changeParts += "$downloadCount updated" }
-        if ($removeCount -gt 0) { $changeParts += "$removeCount removed" }
+        if ($trulyRemovedCount -gt 0) { $changeParts += "$trulyRemovedCount removed" }
         $changeParts += "$unchangedCount unchanged"
         if ($skippedCount -gt 0) { $changeParts += "$skippedCount skipped (override)" }
         Write-Host ($changeParts -join ', ') -ForegroundColor White
 
-        # Show updated mods (version changes) — cap at 20 to avoid flooding
-        if ($downloadCount -gt 0 -and $downloadCount -le 20) {
+        # Show updated mods (version changes)
+        if ($downloadCount -gt 0) {
             Write-Host ""
-            Write-Host "  Mods to update:" -ForegroundColor Yellow
+            Write-Host "  Mods to update ($downloadCount):" -ForegroundColor Cyan
             foreach ($mod in ($ModDiff.ToDownload | Sort-Object { $_.ModName })) {
-                Write-Host "    + $($mod.ModName) -> $($mod.Version)" -ForegroundColor Yellow
+                Write-Host "    + " -NoNewline -ForegroundColor Green
+                Write-Host "$($mod.ModName)" -NoNewline -ForegroundColor White
+                Write-Host " -> $($mod.Version)" -ForegroundColor DarkGray
             }
-        }
-        elseif ($downloadCount -gt 20) {
-            Write-Host ""
-            Write-Host "  Mods to update ($downloadCount total, showing first 15):" -ForegroundColor Yellow
-            $shown = $ModDiff.ToDownload | Sort-Object { $_.ModName } | Select-Object -First 15
-            foreach ($mod in $shown) {
-                Write-Host "    + $($mod.ModName) -> $($mod.Version)" -ForegroundColor Yellow
-            }
-            Write-Host "    ... and $($downloadCount - 15) more" -ForegroundColor DarkGray
         }
 
-        # Show removed mods
+        # Show removed mods (exclude mods that are just being updated to a new version)
         if ($removeCount -gt 0) {
-            Write-Host ""
-            Write-Host "  Mods to remove ($removeCount):" -ForegroundColor Red
-            foreach ($filePath in ($ModDiff.ToRemove | Sort-Object)) {
+            # Build a set of base names being updated so we can exclude them from "removed"
+            $updatingBaseNames = @{}
+            foreach ($mod in $ModDiff.ToDownload) {
+                $baseName = Get-ModBaseName -FileName $mod.FileName
+                $updatingBaseNames[$baseName] = $true
+            }
+
+            # Filter to only truly removed mods (base name not in the download list)
+            $trulyRemoved = @()
+            foreach ($filePath in $ModDiff.ToRemove) {
                 $fileName = Split-Path -Leaf $filePath
-                Write-Host "    - $fileName" -ForegroundColor Red
+                $baseName = Get-ModBaseName -FileName $fileName
+                if (-not $updatingBaseNames.ContainsKey($baseName)) {
+                    $trulyRemoved += $filePath
+                }
+            }
+
+            if ($trulyRemoved.Count -gt 0) {
+                Write-Host ""
+                Write-Host "  Mods removed from pack ($($trulyRemoved.Count)):" -ForegroundColor Red
+                foreach ($filePath in ($trulyRemoved | Sort-Object)) {
+                    $fileName = Split-Path -Leaf $filePath
+                    Write-Host "    - $fileName" -ForegroundColor Red
+                }
+            }
+        }
+
+        # Show override mod conflicts (pack has newer version, user keeping theirs)
+        if ($ModDiff.OverrideConflicts -and $ModDiff.OverrideConflicts.Count -gt 0) {
+            Write-Host ""
+            Write-Host "  Override mods (keeping yours, pack has newer):" -ForegroundColor DarkYellow
+            foreach ($conflict in $ModDiff.OverrideConflicts) {
+                Write-Host "    ~ " -NoNewline -ForegroundColor DarkYellow
+                Write-Host "$($conflict.YourFile)" -NoNewline -ForegroundColor White
+                Write-Host " (pack: $($conflict.ModName) $($conflict.PackVersion))" -ForegroundColor DarkGray
             }
         }
 
@@ -1738,15 +2029,15 @@ function Show-NightlyUpdatePlan {
     }
     elseif ($IsTransition) {
         Write-Host ""
-        Write-Host "  [!] FIRST-TIME NIGHTLY: Clean install required" -ForegroundColor Yellow
-        Write-Host "  Stable and nightly use different mod versions that can't coexist." -ForegroundColor Gray
-        Write-Host "  mods/, config/, and scripts/ will be replaced with nightly versions." -ForegroundColor Gray
+        Write-Host "  [!] FIRST-TIME TRANSITION: Clean install required" -ForegroundColor Yellow
+        Write-Host "  Stable and $Channel use different mod versions that can't coexist." -ForegroundColor Gray
+        Write-Host "  mods/, config/, and scripts/ will be replaced with $Channel versions." -ForegroundColor Gray
         Write-Host "  Your custom mods, user files, and settings are preserved automatically." -ForegroundColor Gray
         Write-Host "  A rollback snapshot is saved in case you want to go back." -ForegroundColor Gray
     }
 
     Write-Host ""
-    return (Confirm-Action "Proceed with update?")
+    return (Confirm-Action "Proceed with update?" -DefaultYes)
 }
 
 function Invoke-NightlyRollback {
@@ -1773,11 +2064,46 @@ function Invoke-NightlyRollback {
                 $sourcePath = Join-Path $RollbackDir $folder
                 if (Test-Path -LiteralPath $sourcePath) {
                     $destPath = Join-Path $InstancePath $folder
-                    if (Test-Path -LiteralPath $destPath) {
-                        Remove-Item -LiteralPath $destPath -Recurse -Force
+
+                    # Check if this is a selective snapshot (mods/ only has specific files)
+                    # vs a full snapshot (has the complete folder contents).
+                    # For selective mods/ snapshots: restore individual files, don't wipe the folder.
+                    $isSelectiveMods = ($folder -eq 'mods') -and
+                        (Test-Path -LiteralPath (Join-Path $RollbackDir '.selective-snapshot'))
+
+                    if ($isSelectiveMods) {
+                        # Selective: restore snapshotted files (old versions) and remove
+                        # any new files that were downloaded during the failed update
+                        $snapshotFiles = Get-ChildItem -LiteralPath $sourcePath -Filter '*.jar' -File -ErrorAction SilentlyContinue
+                        $snapshotFileNames = @{}
+                        foreach ($sf in $snapshotFiles) {
+                            $snapshotFileNames[$sf.Name] = $true
+                            Copy-Item -LiteralPath $sf.FullName -Destination (Join-Path $destPath $sf.Name) -Force
+                        }
+
+                        # Remove newly-downloaded mods that weren't in the snapshot
+                        # (these are the new versions that replaced the old ones)
+                        $preUpdateFileList = Join-Path $RollbackDir '.mods-before-update.txt'
+                        if (Test-Path -LiteralPath $preUpdateFileList) {
+                            $originalFiles = @(Get-Content -LiteralPath $preUpdateFileList)
+                            $currentFiles = Get-ChildItem -LiteralPath $destPath -Filter '*.jar' -File -ErrorAction SilentlyContinue
+                            foreach ($cf in $currentFiles) {
+                                if ($cf.Name -notin $originalFiles -and -not $snapshotFileNames.ContainsKey($cf.Name)) {
+                                    Remove-Item -LiteralPath $cf.FullName -Force -ErrorAction SilentlyContinue
+                                }
+                            }
+                        }
+
+                        Write-Info "  Restored: $folder/ ($($snapshotFiles.Count) file(s))"
                     }
-                    Copy-Item -LiteralPath $sourcePath -Destination $destPath -Recurse -Force
-                    Write-Info "  Restored: $folder/"
+                    else {
+                        # Full: wipe and replace entirely (original behavior)
+                        if (Test-Path -LiteralPath $destPath) {
+                            Remove-Item -LiteralPath $destPath -Recurse -Force
+                        }
+                        Copy-Item -LiteralPath $sourcePath -Destination $destPath -Recurse -Force
+                        Write-Info "  Restored: $folder/"
+                    }
                 }
             }
             Write-Success "Rollback complete."
@@ -1824,5 +2150,3 @@ function Invoke-NightlyUpdaterJar {
     Write-Log "[NIGHTLY] Invoke-NightlyUpdaterJar called (deprecated stub). Returning success."
     return $true
 }
-
-# Remove-TempDir is defined in StableEngine.ps1 (loaded before this file)

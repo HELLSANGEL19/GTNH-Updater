@@ -5,19 +5,24 @@ backups/
 .temp/
 .nightly-updater/
 staging-*/
+.gtnh-rollback-*/
 
 # User config (contains local paths)
 gtnh-updater-config.json
+gtnh-updater-config-*.json
 gtnh-config-export.json
 gtnh-patches-export.json
 
 # Broken config backups
 gtnh-updater-config.broken-*.json
 
-# Lock file (prevents concurrent runs)
-.updater.lock
+# Atomic write temp files
+*.tmp
 
-# Dev tools
+# Lock file
+.gtnh-updater.lock
+
+# Dev files (local only)
 kiro.bat
 lib/DevTools.ps1
-
+DEV-RUNBOOK.md

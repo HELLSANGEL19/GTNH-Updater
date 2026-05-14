@@ -25,10 +25,15 @@ function Find-KeyInLines {
         Optional section name to scope the search.
     #>
     param(
-        [Parameter(Mandatory)][string[]]$Lines,
+        [string[]]$Lines,
         [Parameter(Mandatory)][string]$Key,
         [string]$Section = ''
     )
+
+    # Handle empty file content gracefully
+    if (-not $Lines -or $Lines.Count -eq 0 -or ($Lines.Count -eq 1 -and [string]::IsNullOrWhiteSpace($Lines[0]))) {
+        return -1
+    }
 
     $escapedKey = [regex]::Escape($Key)
     $pattern = "^\s*${escapedKey}\s*="
@@ -110,7 +115,7 @@ function Set-ConfigValue {
     }
 
     try {
-        $lines = Get-Content -LiteralPath $fullPath -Encoding UTF8
+        $lines = @(Get-Content -LiteralPath $fullPath -Encoding UTF8)
 
         $i = Find-KeyInLines -Lines $lines -Key $Key -Section $Section
         $found = $i -ge 0
@@ -188,11 +193,13 @@ function Invoke-ConfigPatches {
 
         # Check if the key exists in the file
         try {
-            $lines = Get-Content -LiteralPath $fullPath -Encoding UTF8
-            $keyFound = (Find-KeyInLines -Lines $lines -Key $patch.Key -Section ($patch.Section ?? '')) -ge 0
+            $lines = @(Get-Content -LiteralPath $fullPath -Encoding UTF8)
+            $sectionParam = if ($patch.PSObject.Properties.Name -contains 'Section' -and -not [string]::IsNullOrEmpty($patch.Section)) { $patch.Section } else { '' }
+            $keyFound = (Find-KeyInLines -Lines $lines -Key $patch.Key -Section $sectionParam) -ge 0
+            Write-Log "[PATCH-PREFLIGHT] File: $($patch.FilePath) | Key: $($patch.Key) | Section: '$sectionParam' | Lines: $($lines.Count) | Found: $keyFound"
 
             if (-not $keyFound) {
-                $sectionNote = $patch.Section ? " in section '$($patch.Section)'" : ''
+                $sectionNote = $sectionParam ? " in section '$sectionParam'" : ''
                 $issues += [PSCustomObject]@{
                     Patch   = $patch
                     Problem = "Key '$($patch.Key)' not found${sectionNote} in $($patch.FilePath)"
@@ -205,6 +212,7 @@ function Invoke-ConfigPatches {
                 Patch   = $patch
                 Problem = "Cannot read file: $($_.Exception.Message)"
             }
+            Write-Log "[PATCH-PREFLIGHT] EXCEPTION for $($patch.FilePath): $($_.Exception.Message)"
             continue
         }
 
@@ -301,7 +309,7 @@ function Test-ConfigPatches {
             continue
         }
 
-        $lines = Get-Content -LiteralPath $fullPath -Encoding UTF8
+        $lines = @(Get-Content -LiteralPath $fullPath -Encoding UTF8)
         $currentValue = '(not found)'
         $idx = Find-KeyInLines -Lines $lines -Key $patch.Key -Section ($patch.Section ?? '')
         if ($idx -ge 0) {
@@ -1118,7 +1126,7 @@ function Invoke-ConfigPatchMenu {
                 Wait-ForKey
             }
             'G' {
-                # Re-scan for config changes using the installed version's pack zip
+                # Re-scan for config changes using the pack defaults
                 Write-Info "Compares your current config files against the pack's defaults."
                 Write-Info "Any keys you've changed will be offered as new patches."
                 Write-Host ""
@@ -1128,51 +1136,121 @@ function Invoke-ConfigPatchMenu {
                 $scanVersion    = $scanTarget -eq '1' ? $Config.InstalledServerVersion : $Config.InstalledClientVersion
                 $scanInstance   = $scanTarget -eq '1' ? $Config.ServerPath : $Config.ClientInstancePath
 
-                if ([string]::IsNullOrEmpty($scanVersion)) {
-                    Write-Warn "No installed version recorded for $scanTargetName. Set it in Settings > Update Preferences."
-                    Wait-ForKey; continue
-                }
                 if ([string]::IsNullOrEmpty($scanInstance) -or -not (Test-Path -LiteralPath $scanInstance)) {
                     Write-Warn "No valid $scanTargetName path configured."
                     Wait-ForKey; continue
                 }
 
-                # Find the release entry for the installed version
-                $releases = $script:CachedWebsiteReleases
-                if (-not $releases) {
-                    Write-Info "Fetching release list..."
-                    $releases = Get-WebsiteReleases -PackType ($Config.JavaVersion ?? 'java17')
-                }
-                $scanRelease = $releases | Where-Object { $_.Version -eq $scanVersion } | Select-Object -First 1
-                if (-not $scanRelease) {
-                    Write-Warn "Could not find v$scanVersion in release list."
-                    Wait-ForKey; continue
-                }
+                # Determine if this is a nightly/daily instance
+                $scanIsNightly = ($Config.DefaultChannel ?? 'stable') -ne 'stable'
+                $nightlyState = Join-Path $scanInstance '.gtnh-nightly-state.json'
+                if (Test-Path -LiteralPath $nightlyState) { $scanIsNightly = $true }
+                if ($scanVersion -match 'nightly|daily|experimental|\d{4}-\d{2}-\d{2}|^GTNH-') { $scanIsNightly = $true }
 
-                $scanZipUrl  = $scanTargetName -eq 'server' ? $scanRelease.ServerZipUrl  : $scanRelease.ClientZipUrl
-                $scanZipName = $scanTargetName -eq 'server' ? $scanRelease.ServerZipName : $scanRelease.ClientZipName
-                if (-not $scanZipUrl) {
-                    Write-Warn "No zip URL found for v$scanVersion $scanTargetName."
-                    Wait-ForKey; continue
-                }
+                $scanZipPath = $null
+                $tempZip = $null
 
-                # Use cache if available, otherwise download
-                $scanZipPath = Get-CachedFile -FileName $scanZipName
-                $tempZip     = $null
-                if ($scanZipPath) {
-                    Write-Info "Using cached pack: $scanZipName"
-                } else {
-                    if (-not (Test-Path -LiteralPath $script:TempDir)) {
-                        New-Item -Path $script:TempDir -ItemType Directory -Force | Out-Null
-                    }
-                    $tempZip     = Join-Path $script:TempDir $scanZipName
-                    $dlResult    = Invoke-FileDownload -Url $scanZipUrl -OutPath $tempZip -Description "v$scanVersion $scanTargetName pack"
-                    if (-not $dlResult) {
-                        Write-Warn "Download failed."
-                        if (Test-Path -LiteralPath $tempZip) { try { Remove-Item -LiteralPath $tempZip -Force } catch {} }
+                if ($scanIsNightly) {
+                    # ── Daily/Experimental: use saved config baseline or download ─────
+                    $nightlyState = Join-Path $scanInstance '.gtnh-nightly-state.json'
+                    if (-not (Test-Path -LiteralPath $nightlyState)) {
+                        Write-Warn "No update has been run through this tool yet for this instance."
+                        Write-Info "Run a daily/experimental update first, then the config scan will work accurately."
                         Wait-ForKey; continue
                     }
-                    $scanZipPath = $tempZip
+
+                    # Check for saved config baseline first (avoids re-downloading)
+                    $baselinePath = Join-Path $scanInstance '.gtnh-config-baseline.zip'
+                    if (Test-Path -LiteralPath $baselinePath) {
+                        Write-Info "Using saved config baseline."
+                        $scanZipPath = $baselinePath
+                    } else {
+                        # No baseline saved - download from GitHub
+                        $stateData = $null
+                        try {
+                            $stateData = Get-Content -LiteralPath $nightlyState -Raw | ConvertFrom-Json
+                        } catch {
+                            Write-Warn "Could not read state file: $($_.Exception.Message)"
+                            Wait-ForKey; continue
+                        }
+
+                        if (-not $stateData.InstalledVersion) {
+                            Write-Warn "State file is missing version info. Run an update first."
+                            Wait-ForKey; continue
+                        }
+
+                        $configTag = $stateData.InstalledVersion
+                        Write-Info "Comparing against config defaults from: $($configTag -replace 'nightly-', '' -replace 'experimental-', '')"
+
+                        $releaseInfo = Get-NightlyReleaseInfo -ConfigTag $configTag
+                        if (-not $releaseInfo -or -not $releaseInfo.ZipUrl) {
+                            Write-Warn "Could not find config zip URL for $configTag."
+                            Wait-ForKey; continue
+                        }
+
+                        if (-not (Test-Path -LiteralPath $script:TempDir)) {
+                            New-Item -Path $script:TempDir -ItemType Directory -Force | Out-Null
+                        }
+                        $tempZip = Join-Path $script:TempDir "config-scan-$configTag.zip"
+                        $httpClient = $null
+                        try {
+                            $httpClient = [System.Net.Http.HttpClient]::new()
+                            $httpClient.DefaultRequestHeaders.Add('User-Agent', 'GTNH-Updater-Script')
+                            $httpClient.Timeout = [TimeSpan]::FromMinutes(3)
+                            $zipBytes = $httpClient.GetByteArrayAsync($releaseInfo.ZipUrl).Result
+                            [System.IO.File]::WriteAllBytes($tempZip, $zipBytes)
+                            $scanZipPath = $tempZip
+                            Write-Info "Downloaded config zip ($([math]::Round($zipBytes.Length / 1MB, 1)) MB)"
+                        }
+                        catch {
+                            Write-Warn "Could not download config zip: $($_.Exception.Message)"
+                            Wait-ForKey; continue
+                        }
+                        finally {
+                            if ($httpClient) { try { $httpClient.Dispose() } catch {} }
+                        }
+                    }
+                } else {
+                    # ── Stable: download pack zip ──────────────────────────────────────
+                    if ([string]::IsNullOrEmpty($scanVersion)) {
+                        Write-Warn "No installed version recorded for $scanTargetName. Set it in Settings > Update Preferences."
+                        Wait-ForKey; continue
+                    }
+
+                    $releases = $script:CachedWebsiteReleases
+                    if (-not $releases) {
+                        Write-Info "Fetching release list..."
+                        $releases = Get-WebsiteReleases -PackType ($Config.JavaVersion ?? 'java17')
+                    }
+                    $scanRelease = $releases | Where-Object { $_.Version -eq $scanVersion } | Select-Object -First 1
+                    if (-not $scanRelease) {
+                        Write-Warn "Could not find v$scanVersion in release list."
+                        Wait-ForKey; continue
+                    }
+
+                    $scanZipUrl  = $scanTargetName -eq 'server' ? $scanRelease.ServerZipUrl  : $scanRelease.ClientZipUrl
+                    $scanZipName = $scanTargetName -eq 'server' ? $scanRelease.ServerZipName : $scanRelease.ClientZipName
+                    if (-not $scanZipUrl) {
+                        Write-Warn "No zip URL found for v$scanVersion $scanTargetName."
+                        Wait-ForKey; continue
+                    }
+
+                    $scanZipPath = Get-CachedFile -FileName $scanZipName
+                    if ($scanZipPath) {
+                        Write-Info "Using cached pack: $scanZipName"
+                    } else {
+                        if (-not (Test-Path -LiteralPath $script:TempDir)) {
+                            New-Item -Path $script:TempDir -ItemType Directory -Force | Out-Null
+                        }
+                        $tempZip = Join-Path $script:TempDir $scanZipName
+                        $dlResult = Invoke-FileDownload -Url $scanZipUrl -OutPath $tempZip -Description "v$scanVersion $scanTargetName pack"
+                        if (-not $dlResult) {
+                            Write-Warn "Download failed."
+                            if (Test-Path -LiteralPath $tempZip) { try { Remove-Item -LiteralPath $tempZip -Force } catch {} }
+                            Wait-ForKey; continue
+                        }
+                        $scanZipPath = $tempZip
+                    }
                 }
 
                 try {
@@ -1262,6 +1340,7 @@ function Get-ConfigKeysFromZip {
     param([Parameter(Mandatory)][string]$ZipPath)
 
     $result = @{}
+    $zip = $null
     try {
         Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
         $zip = [System.IO.Compression.ZipFile]::OpenRead($ZipPath)
@@ -1283,11 +1362,13 @@ function Get-ConfigKeysFromZip {
             }
             catch { }
         }
-        $zip.Dispose()
     }
     catch {
         Write-Log "[DIFF] Failed to read zip for config baseline: $($_.Exception.Message)"
         return $null
+    }
+    finally {
+        if ($zip) { try { $zip.Dispose() } catch {} }
     }
     return $result
 }
@@ -1420,11 +1501,22 @@ function Invoke-ConfigDiffDetection {
     Write-Host "  -- Config Change Detection --" -ForegroundColor Cyan
 
     if ($totalNew -gt 0) {
-        Write-Host "  $totalNew change(s) auto-registered as patch(es):" -ForegroundColor Green
+        Write-Host "  $totalNew change(s) detected and saved as patch(es):" -ForegroundColor Green
         foreach ($p in $newPatches) {
             $secNote = $p.Section ? " [$($p.Section)]" : ''
-            Write-Host "    + $($p.FilePath)  $($p.Key) = $($p.Value)$secNote" -ForegroundColor Green
-            Write-Log "[DIFF] Auto-registered patch: $($p.FilePath) | $($p.Key) = $($p.Value)"
+            Write-Host "    + " -NoNewline -ForegroundColor Green
+            Write-Host "$($p.FilePath)" -NoNewline -ForegroundColor White
+            Write-Host "  $($p.Key)" -ForegroundColor Cyan
+            Write-Host "      pack default: " -NoNewline -ForegroundColor DarkGray
+            # Look up the baseline value for display
+            $baseKey = "$($p.Section)::$($p.Key)"
+            $baseVal = if ($baselineMap.ContainsKey($p.FilePath) -and $baselineMap[$p.FilePath].ContainsKey($baseKey)) {
+                $baselineMap[$p.FilePath][$baseKey]
+            } else { '(unknown)' }
+            Write-Host "$baseVal" -NoNewline -ForegroundColor DarkGray
+            Write-Host "  ->  yours: " -NoNewline -ForegroundColor Gray
+            Write-Host "$($p.Value)" -ForegroundColor Green
+            Write-Log "[DIFF] Auto-registered patch: $($p.FilePath) | $($p.Key) = $($p.Value) (was: $baseVal)"
         }
         foreach ($p in $newPatches) { $Config.ConfigPatches += $p }
         Save-Config -Config $Config
@@ -1436,13 +1528,16 @@ function Invoke-ConfigDiffDetection {
 
     foreach ($conflict in $conflicts) {
         Write-Host ""
-        Write-Host "  Conflict: $($conflict.FilePath)  $($conflict.Key)" -ForegroundColor Yellow
+        Write-Host "  Conflict: " -NoNewline -ForegroundColor Yellow
+        Write-Host "$($conflict.FilePath)  $($conflict.Key)" -ForegroundColor White
         $secNote = $conflict.Section ? " [$($conflict.Section)]" : ''
-        Write-Host "    Your value:       $($conflict.YourValue)$secNote" -ForegroundColor Cyan
-        Write-Host "    Pack's new value: $($conflict.PackValue)" -ForegroundColor DarkYellow
+        Write-Host "    Your value:       " -NoNewline -ForegroundColor Cyan
+        Write-Host "$($conflict.YourValue)$secNote" -ForegroundColor Cyan
+        Write-Host "    Pack's new value: " -NoNewline -ForegroundColor DarkYellow
+        Write-Host "$($conflict.PackValue)" -ForegroundColor DarkYellow
         Write-Host ""
-        Write-MenuOption 'K' 'Keep mine (save as patch)'
-        Write-MenuOption 'U' "Use pack's value"
+        Write-MenuOption 'K' "Keep yours ($($conflict.YourValue)) and save as patch"
+        Write-MenuOption 'U' "Use pack's value ($($conflict.PackValue))"
         Write-MenuOption 'S' 'Skip (pack wins this update, no patch saved)'
 
         $choice = Read-MenuChoice 'Choose'

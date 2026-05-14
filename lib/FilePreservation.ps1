@@ -20,13 +20,14 @@ function Get-ServerPreservationList {
     return @(
         'config/JourneyMapServer'
         'serverutilities'
+        'opencomputers'
+        'visualprospecting'
         'ops.json'
         'whitelist.json'
         'banned-players.json'
         'banned-ips.json'
         'usercache.json'
         'server.properties'
-        'opencomputers'
     )
 }
 
@@ -37,16 +38,24 @@ function Get-ClientPreservationList {
     #>
     return @(
         'journeymap'
-        'options.txt'
-        'servers.dat'
-        'optionsof.txt'
-        'optionsnf.txt'
+        'visualprospecting'
+        'TCNodeTracker'
+        'saves'
+        'schematics'
+        'screenshots'
+        'shaderpacks'
         'resourcepacks'
         'opencomputers'
+        'maps'
+        'options.txt'
+        'optionsof.txt'
+        'optionsnf.txt'
+        'servers.dat'
+        'localconfig.cfg'
+        'BotaniaVars.dat'
         'config/NEI'
         'config/shaders.properties'
         'config/vendingmachine'
-        'maps'
     )
 }
 

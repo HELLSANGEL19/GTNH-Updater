@@ -123,8 +123,11 @@ function Test-JavaBinary {
 
     # Try running java -version to verify it works
     try {
+        $stderrFile = [System.IO.Path]::GetTempFileName()
         $proc = Start-Process -FilePath $Path -ArgumentList '-version' -Wait -PassThru -NoNewWindow `
-            -RedirectStandardError ([System.IO.Path]::GetTempFileName()) -ErrorAction Stop
+            -RedirectStandardError $stderrFile -ErrorAction Stop
+        # Clean up the temp file
+        try { Remove-Item -LiteralPath $stderrFile -Force -ErrorAction SilentlyContinue } catch {}
         if ($proc.ExitCode -eq 0) {
             return $true
         }
@@ -132,6 +135,10 @@ function Test-JavaBinary {
         return (Confirm-Action "Use this path anyway?")
     }
     catch {
+        # Clean up temp file on error path too
+        if ($stderrFile -and (Test-Path -LiteralPath $stderrFile)) {
+            try { Remove-Item -LiteralPath $stderrFile -Force } catch {}
+        }
         Write-Warn "Could not execute Java at this path: $($_.Exception.Message)"
         return (Confirm-Action "Use this path anyway?")
     }
@@ -531,10 +538,12 @@ function Invoke-InteractiveSetup {
     if ($serverDetected -or $clientDetected) {
         Write-Host ""
         if ($serverDetected) {
-            Write-Success "Detected server version: $serverDetected"
+            $serverDisplay = $serverDetected -replace 'nightly-', '' -replace 'experimental-', ''
+            Write-Success "Detected server version: $serverDisplay"
         }
         if ($clientDetected) {
-            Write-Success "Detected client version: $clientDetected"
+            $clientDisplay = $clientDetected -replace 'nightly-', '' -replace 'experimental-', ''
+            Write-Success "Detected client version: $clientDisplay"
         }
 
         if ($serverDetected -and $clientDetected -and $serverDetected -ne $clientDetected) {
@@ -548,8 +557,10 @@ function Invoke-InteractiveSetup {
             do {
                 $input = Read-UserInput "Server version" -Default ($serverDetected ?? '')
                 if (-not $input -or $input -eq ($serverDetected ?? '')) { $serverVersion = $serverDetected; break }
+                if ($input -match '^(?:GTNH-)?(\d{4}-\d{2}-\d{2})') { $serverVersion = "nightly-$($Matches[1])"; break }
+                if ($input -match '^nightly-') { $serverVersion = $input; break }
                 if ($input -match '^\d+\.\d+\.\d+') { $serverVersion = $input }
-                else { Write-Warn "Please enter a full version like 2.8.4, not just a number." }
+                else { Write-Warn "Enter a version like 2.8.4 or 2026-05-01. Daily users can press Enter to skip." }
             } while (-not $serverVersion)
             if ($serverVersion) { $config.InstalledServerVersion = $serverVersion }
         }
@@ -558,8 +569,10 @@ function Invoke-InteractiveSetup {
             do {
                 $input = Read-UserInput "Client version" -Default ($clientDetected ?? '')
                 if (-not $input -or $input -eq ($clientDetected ?? '')) { $clientVersion = $clientDetected; break }
+                if ($input -match '^(?:GTNH-)?(\d{4}-\d{2}-\d{2})') { $clientVersion = "nightly-$($Matches[1])"; break }
+                if ($input -match '^nightly-') { $clientVersion = $input; break }
                 if ($input -match '^\d+\.\d+\.\d+') { $clientVersion = $input }
-                else { Write-Warn "Please enter a full version like 2.8.4, not just a number." }
+                else { Write-Warn "Enter a version like 2.8.4 or 2026-05-01. Daily users can press Enter to skip." }
             } while (-not $clientVersion)
             if ($clientVersion) { $config.InstalledClientVersion = $clientVersion }
         }
@@ -572,17 +585,30 @@ function Invoke-InteractiveSetup {
         }
     } else {
         Write-Info ""
-        Write-Info "Current GTNH version (leave blank if unsure):"
+        Write-Info "Current GTNH version (leave blank if unsure or on daily/experimental):"
         Write-Host "  Examples: " -NoNewline -ForegroundColor Gray
         Write-Host "2.8.4" -NoNewline -ForegroundColor Cyan
-        Write-Host " or " -NoNewline -ForegroundColor Gray
+        Write-Host ", " -NoNewline -ForegroundColor Gray
         Write-Host "2.8.0-beta-4" -ForegroundColor Cyan
+        Write-Info "  (Daily/experimental users: skip this and just run an update)"
         $currentVersion = $null
         do {
             $input = Read-UserInput "Current GTNH version"
             if (-not $input) { break }
+            if ($input -match '^(?:GTNH-)?(\d{4}-\d{2}-\d{2})') {
+                $currentVersion = "nightly-$($Matches[1])"
+                Write-Info "  Recognized as dev build: $($Matches[1])"
+                break
+            }
             if ($input -match '^\d+\.\d+\.\d+') { $currentVersion = $input }
-            else { Write-Warn "Please enter a full version like 2.8.4, not just a number." }
+            elseif ($input -match '\d{4}-\d{2}-\d{2}') {
+                # Accept any format with a date in it as a nightly indicator
+                $dateMatch = [regex]::Match($input, '\d{4}-\d{2}-\d{2}').Value
+                $currentVersion = "nightly-$dateMatch"
+                Write-Info "  Recognized as dev build: $dateMatch"
+                break
+            }
+            else { Write-Warn "Enter a version like 2.8.4 or 2.8.0-beta-4. Daily users can leave blank." }
         } while (-not $currentVersion)
         if ($currentVersion) {
             if ($hasServer) { $config.InstalledServerVersion = $currentVersion }
@@ -664,6 +690,7 @@ function Invoke-InteractiveSetup {
                 }
 
                 # Read mod filenames from zip
+                $scanZip = $null
                 try {
                     Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
                     $scanZip = [System.IO.Compression.ZipFile]::OpenRead($scanZipPath)
@@ -673,13 +700,13 @@ function Invoke-InteractiveSetup {
                             $officialModFiles += $Matches[1]
                         }
                     }
-                    $scanZip.Dispose()
                 }
                 catch {
                     Write-Warn "Could not read zip - skipping $scanLabel scan."
                     continue
                 }
                 finally {
+                    if ($scanZip) { try { $scanZip.Dispose() } catch {} }
                     if (Test-Path -LiteralPath $scanZipPath) {
                         try { Remove-Item -LiteralPath $scanZipPath -Force } catch {}
                     }

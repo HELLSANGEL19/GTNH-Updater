@@ -16,13 +16,6 @@
 # file preservation, and post-update verification at every step.
 # ============================================================================
 
-function Remove-TempDir {
-    param([string]$Path)
-    if ($Path -and (Test-Path -LiteralPath $Path)) {
-        try { Remove-Item -LiteralPath $Path -Recurse -Force } catch {}
-    }
-}
-
 function Invoke-StableUpdate {
     <#
     .SYNOPSIS
@@ -594,17 +587,23 @@ function Invoke-StableUpdate {
 
     if ($updated.Count -gt 0) {
         Write-Host ""
-        Write-Host "  Mods updated (version change) ($($updated.Count)):" -ForegroundColor Yellow
+        Write-Host "  Mods updated (version change) ($($updated.Count)):" -ForegroundColor Cyan
         $sortedUpdated = @($updated | Sort-Object { $_.New })
         if ($sortedUpdated.Count -le $pageSize) {
             foreach ($entry in $sortedUpdated) {
-                Write-Host "    ~ $($entry.Old) -> $($entry.New)" -ForegroundColor Yellow
+                Write-Host "    ~ " -NoNewline -ForegroundColor DarkYellow
+                Write-Host "$($entry.Old)" -NoNewline -ForegroundColor DarkGray
+                Write-Host " -> " -NoNewline -ForegroundColor Gray
+                Write-Host "$($entry.New)" -ForegroundColor White
             }
         } else {
             for ($p = 0; $p -lt $sortedUpdated.Count; $p += $pageSize) {
                 $end = [math]::Min($p + $pageSize, $sortedUpdated.Count)
                 for ($j = $p; $j -lt $end; $j++) {
-                    Write-Host "    ~ $($sortedUpdated[$j].Old) -> $($sortedUpdated[$j].New)" -ForegroundColor Yellow
+                    Write-Host "    ~ " -NoNewline -ForegroundColor DarkYellow
+                    Write-Host "$($sortedUpdated[$j].Old)" -NoNewline -ForegroundColor DarkGray
+                    Write-Host " -> " -NoNewline -ForegroundColor Gray
+                    Write-Host "$($sortedUpdated[$j].New)" -ForegroundColor White
                 }
                 if ($end -lt $sortedUpdated.Count) {
                     Write-Host "    ... ($end of $($sortedUpdated.Count) shown, press Enter for more)" -ForegroundColor DarkGray
@@ -677,7 +676,8 @@ function Invoke-StableUpdate {
             }
             foreach ($entry in $updated) {
                 if ($entry.Old -ilike "*$searchTerm*" -or $entry.New -ilike "*$searchTerm*") {
-                    Write-Host "    ~ $($entry.Old) -> $($entry.New)" -ForegroundColor Yellow
+                    Write-Host "    ~ " -NoNewline -ForegroundColor DarkYellow
+                    Write-Host "$($entry.Old) -> $($entry.New)" -ForegroundColor White
                     $anyFound = $true
                 }
             }
@@ -980,7 +980,9 @@ function Invoke-StableUpdate {
 
     try {
         # ── Delete folders ────────────────────────────────────────────────────
-        Write-Step "Step 3/$totalSteps`: Deleting old pack files..."
+        # Note: Save-RollbackSnapshot already MOVED these folders out (for speed).
+        # Invoke-DeleteFolders handles any stragglers (Java17 files, edge cases).
+        Write-Step "Step 3/$totalSteps`: Cleaning old pack files..."
         $postDeletion = $true
 
         Invoke-DeleteFolders -InstancePath $instancePath -Target $Target -JavaVersion $javaVersion

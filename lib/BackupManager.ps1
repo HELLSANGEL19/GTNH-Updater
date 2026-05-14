@@ -69,6 +69,23 @@ function Invoke-FullInstanceBackup {
     # For server: Minecraft -> AMP/panel instance root (has server wrapper configs)
     $backupSourceDir = Split-Path -Parent $InstancePath
 
+    # Safety check: ensure we're not backing up something too broad.
+    # If the parent directory contains more than 10 subdirectories that look like
+    # other game instances, we're probably too high (e.g., backing up all of "instances/")
+    $parentSubDirs = @(Get-ChildItem -LiteralPath $backupSourceDir -Directory -ErrorAction SilentlyContinue)
+    if ($parentSubDirs.Count -gt 10) {
+        $modsCount = @($parentSubDirs | Where-Object {
+            Test-Path -LiteralPath (Join-Path $_.FullName 'mods') -or
+            Test-Path -LiteralPath (Join-Path $_.FullName '.minecraft')
+        }).Count
+        if ($modsCount -gt 3) {
+            Write-Warn "Backup source '$backupSourceDir' appears to contain multiple game instances ($($parentSubDirs.Count) subdirs)."
+            Write-Warn "This would back up ALL instances, not just yours."
+            Write-Info "Your configured path may be pointing at the wrong level."
+            if (-not (Confirm-Action "Back up this entire directory anyway?")) { return $null }
+        }
+    }
+
     # Estimate instance size (from the parent directory)
     $instanceSizeGB = $null
     try {
@@ -235,7 +252,7 @@ function Invoke-BackupCleanup {
     }
 
     $retention = $Config.BackupRetention ?? 5
-    $pattern = "gtnh-backup-${Target}-*"
+    $pattern = "gtnh-full-${Target}-*"
 
     $backups = Get-ChildItem -LiteralPath $backupDir -Directory -Filter $pattern | Sort-Object Name
 
@@ -403,10 +420,11 @@ function Save-RollbackSnapshot {
     .SYNOPSIS
         Save a lightweight snapshot of folders that will be deleted during update.
     .DESCRIPTION
-        Copies the folders the update will delete to a rollback directory in .temp/.
-        This allows the script to roll back without needing AMP if the update fails
-        after the point of no return. The snapshot is automatically cleaned up after
-        a successful update.
+        MOVES (not copies) the folders the update will delete to a rollback directory.
+        Using Move-Item is instant on the same drive (just a directory rename) vs
+        Copy-Item which duplicates every byte. The rollback dir is placed next to the
+        instance to maximize the chance of being on the same filesystem.
+        On failure, folders are moved back. On success, the rollback dir is deleted.
     .PARAMETER InstancePath
         The root path of the instance.
     .PARAMETER Target
@@ -419,7 +437,8 @@ function Save-RollbackSnapshot {
         [Parameter(Mandatory)][ValidateSet('server', 'client')][string]$Target
     )
 
-    $rollbackDir = Join-Path $script:TempDir "rollback-${Target}"
+    # Place rollback dir next to instance (same drive = instant moves)
+    $rollbackDir = Join-Path (Split-Path -Parent $InstancePath) ".gtnh-rollback-${Target}"
 
     # Clean any previous rollback snapshot
     if (Test-Path -LiteralPath $rollbackDir) {
@@ -438,9 +457,11 @@ function Save-RollbackSnapshot {
             $sourcePath = Join-Path $InstancePath $folder
             if (Test-Path -LiteralPath $sourcePath) {
                 $destPath = Join-Path $rollbackDir $folder
-                Copy-Item -LiteralPath $sourcePath -Destination $destPath -Recurse -Force
+                # Use Move for speed (instant on same filesystem)
+                # Falls back to copy+delete if cross-drive (still works, just slower)
+                Move-Item -LiteralPath $sourcePath -Destination $destPath -Force
                 $snapshotCount++
-                Write-Log "[ROLLBACK] Snapshot: $folder/"
+                Write-Log "[ROLLBACK] Snapshot (moved): $folder/"
             }
         }
 

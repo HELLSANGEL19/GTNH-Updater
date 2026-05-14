@@ -42,8 +42,11 @@ function Show-MainMenu {
 
     # Show current status
     Write-Host ""
-    $serverVer = $Config.InstalledServerVersion ? $Config.InstalledServerVersion : '(unknown)'
-    $clientVer = $Config.InstalledClientVersion ? $Config.InstalledClientVersion : '(unknown)'
+    $serverVerRaw = $Config.InstalledServerVersion ? $Config.InstalledServerVersion : '(unknown)'
+    $clientVerRaw = $Config.InstalledClientVersion ? $Config.InstalledClientVersion : '(unknown)'
+    # Clean up "nightly-" and "experimental-" from display (keep the date/version part)
+    $serverVer = $serverVerRaw -replace 'nightly-', '' -replace 'experimental-', ''
+    $clientVer = $clientVerRaw -replace 'nightly-', '' -replace 'experimental-', ''
     $channel = $Config.DefaultChannel ?? 'stable'
     $latestStable = $script:CachedLatestVersion ? $script:CachedLatestVersion : '(not checked)'
     $isStableChannel = $channel -eq 'stable'
@@ -96,8 +99,12 @@ function Show-MainMenu {
         Write-Host ""
     }
     if (-not $isStableChannel -and $script:CachedLatestNightly) {
-        Write-Host "  Latest daily:   " -NoNewline -ForegroundColor Gray
-        Write-Host "$($script:CachedLatestNightly)" -NoNewline -ForegroundColor Magenta
+        $channelLabel = $Config.DefaultChannel ?? 'daily'
+        $displayVersion = $script:CachedLatestNightly -replace 'nightly-', '' -replace 'experimental-', ''
+        $labelText = "  Latest ${channelLabel}:"
+        $padded = $labelText.PadRight(18)
+        Write-Host "$padded" -NoNewline -ForegroundColor Gray
+        Write-Host "$displayVersion" -NoNewline -ForegroundColor Magenta
         # Show "mods updated" hint if the manifest was refreshed more recently than the config tag date
         if ($script:CachedNightlyLastUpdated) {
             try {
@@ -187,9 +194,7 @@ function Invoke-TargetSelection {
         Prompt for update target selection.
     .DESCRIPTION
         If only one target is configured, auto-selects it without prompting.
-        If both are configured, asks user to choose [1] Server only,
-        [2] Client only, [3] Both.
-        Backup warnings are shown later in the engine, right before applying.
+        If both are configured, shows last choice as default (Enter to accept).
     .PARAMETER Config
         The config PSCustomObject.
     .OUTPUTS
@@ -223,11 +228,25 @@ function Invoke-TargetSelection {
         return $result
     }
 
-    # Both configured - ask user
+    # Both configured - show last choice as default
+    $lastTarget = $Config.LastUpdateTarget ?? ''
+    $defaultLabel = switch ($lastTarget) {
+        'server' { 'Server only' }
+        'client' { 'Client only' }
+        'both'   { 'Both server and client' }
+        default  { '' }
+    }
+
     while ($true) {
         Write-Header "Select Update Target"
         Write-Host ""
 
+        if ($defaultLabel) {
+            Write-Host "  Last time: " -NoNewline -ForegroundColor DarkGray
+            Write-Host "$defaultLabel" -ForegroundColor Cyan
+            Write-Host ""
+            Write-MenuOption "Enter" "Same as last time"
+        }
         Write-MenuOption "1" "Server only"
         Write-MenuOption "2" "Client only"
         Write-MenuOption "3" "Both server and client"
@@ -235,10 +254,34 @@ function Invoke-TargetSelection {
 
         $choice = Read-MenuChoice "Select target"
 
+        # Enter = use last choice (if available)
+        if ([string]::IsNullOrEmpty($choice) -and $lastTarget) {
+            $choice = switch ($lastTarget) {
+                'server' { '1' }
+                'client' { '2' }
+                'both'   { '3' }
+            }
+        }
+
         switch ($choice) {
-            '1' { $result.Server = $true; return $result }
-            '2' { $result.Client = $true; return $result }
-            '3' { $result.Server = $true; $result.Client = $true; return $result }
+            '1' {
+                $result.Server = $true
+                $Config.LastUpdateTarget = 'server'
+                Save-Config -Config $Config
+                return $result
+            }
+            '2' {
+                $result.Client = $true
+                $Config.LastUpdateTarget = 'client'
+                Save-Config -Config $Config
+                return $result
+            }
+            '3' {
+                $result.Server = $true; $result.Client = $true
+                $Config.LastUpdateTarget = 'both'
+                Save-Config -Config $Config
+                return $result
+            }
             { $_ -eq 'R' -or $_ -eq 'r' } { return $result }
             default {
                 Write-Err "Invalid selection. Enter 1, 2, 3, or R."
@@ -364,7 +407,6 @@ function Invoke-SettingsMenu {
             }
             default {
                 Write-Err "Invalid selection. Please try again."
-                Wait-ForKey
             }
         }
     }
@@ -566,7 +608,6 @@ function Invoke-UpdatePreferencesMenu {
                 # Clear cached version data so it refreshes for the new channel
                 $script:CachedWebsiteReleases = $null
                 Write-Success "Default channel set to: $($Config.DefaultChannel)"
-                Wait-ForKey
             }
             '2' {
                 Write-Info "Select server pack type:"
@@ -580,7 +621,6 @@ function Invoke-UpdatePreferencesMenu {
                 }
                 Save-Config -Config $Config
                 Write-Success "Server pack type set to: $($Config.JavaVersion)"
-                Wait-ForKey
             }
             '3' {
                 Write-Header "Set Installed Version"
@@ -634,14 +674,19 @@ function Invoke-UpdatePreferencesMenu {
                 }
 
                 Write-Host ""
-                Write-Host '  Example: 2.8.4' -ForegroundColor Cyan
-                Write-Host '  Example: 2.8.0-beta-4' -ForegroundColor Cyan
+                Write-Host '  Examples: 2.8.4, 2.8.0-beta-4' -ForegroundColor Cyan
+                Write-Info "  (Daily/experimental users: leave blank and just run an update)"
                 $newVer = $null
                 do {
                     $input = Read-UserInput "GTNH version"
                     if (-not $input) { break }
+                    if ($input -match '^GTNH-(\d{4}-\d{2}-\d{2})') { $newVer = "nightly-$($Matches[1])"; break }
                     if ($input -match '^\d+\.\d+\.\d+') { $newVer = $input }
-                    else { Write-Warn "Please enter a full version like 2.8.4, not just a number." }
+                    elseif ($input -match '\d{4}-\d{2}-\d{2}') {
+                        $dateMatch = [regex]::Match($input, '\d{4}-\d{2}-\d{2}').Value
+                        $newVer = "nightly-$dateMatch"; break
+                    }
+                    else { Write-Warn "Enter a version like 2.8.4. Daily users can leave blank." }
                 } while (-not $newVer)
                 if ($newVer) {
                     Write-Info "Apply to: [1] Server, [2] Client, [3] Both"
@@ -661,14 +706,12 @@ function Invoke-UpdatePreferencesMenu {
                 $Config.AutoCheckUpdates = -not ($Config.AutoCheckUpdates ?? $true)
                 Save-Config -Config $Config
                 Write-Success "Auto-update check $($Config.AutoCheckUpdates ? 'enabled' : 'disabled')."
-                Wait-ForKey
             }
             { $_ -eq 'R' -or $_ -eq 'r' } {
                 return
             }
             default {
                 Write-Err "Invalid selection. Please try again."
-                Wait-ForKey
             }
         }
     }
@@ -1190,14 +1233,9 @@ function Invoke-CustomModSettingsMenu {
 
         switch ($choice) {
             { $_ -eq 'S' -or $_ -eq 's' } {
-                # Scan for custom mods by downloading the pack zip and comparing filenames
+                # Scan for custom mods by comparing against official mod list
                 $installedVer = if ($Target -eq 'server') { $Config.InstalledServerVersion } else { $Config.InstalledClientVersion }
                 $installedVer = if ($installedVer) { $installedVer.Trim() } else { '' }
-                if ([string]::IsNullOrWhiteSpace($installedVer) -or $installedVer -eq 'unknown') {
-                    Write-Warn "No installed version known for $label. Set it in Update Preferences first."
-                    Wait-ForKey
-                    continue
-                }
                 if ([string]::IsNullOrEmpty($instancePath) -or -not (Test-Path -LiteralPath $instancePath)) {
                     Write-Warn "No valid $($label.ToLower()) path configured."
                     Wait-ForKey
@@ -1210,100 +1248,156 @@ function Invoke-CustomModSettingsMenu {
                     continue
                 }
 
-                # Find the release matching the installed version
-                $allReleases = $script:CachedWebsiteReleases ?? (Get-WebsiteReleases -PackType ($Config.JavaVersion ?? 'java17'))
-                $matchingRelease = $null
-                if ($allReleases) {
-                    $matchingRelease = $allReleases | Where-Object { $_.Version -eq $installedVer } | Select-Object -First 1
-                }
+                # Determine if this is a nightly/daily instance (use manifest) or stable (use zip)
+                $isNightlyInstance = $installedVer -match 'nightly|daily|experimental|\d{4}-\d{2}-\d{2}|^GTNH-'
+                $channel = $Config.DefaultChannel ?? 'stable'
+                $isNightlyChannel = $channel -ne 'stable'
 
-                if (-not $matchingRelease) {
-                    Write-Warn "Could not find release v${installedVer} in the version list."
-                    Write-Info "Make sure your installed version is correct (Settings > Update Preferences)."
-                    Wait-ForKey
-                    continue
-                }
+                # Also check for nightly state file as a signal
+                $nightlyStateFile = Join-Path $instancePath '.gtnh-nightly-state.json'
+                $hasNightlyState = Test-Path -LiteralPath $nightlyStateFile
 
-                $zipUrl = if ($Target -eq 'server') { $matchingRelease.ServerZipUrl } else { $matchingRelease.ClientZipUrl }
-                $zipName = if ($Target -eq 'server') { $matchingRelease.ServerZipName } else { $matchingRelease.ClientZipName }
+                $officialModFiles = @()
 
-                if (-not $zipUrl) {
-                    Write-Warn "No $label zip URL found for v${installedVer}."
-                    Wait-ForKey
-                    continue
-                }
-
-                # Check if the zip is already cached
-                $cachedZip = Get-CachedFile -FileName $zipName
-                if ($cachedZip) {
-                    Write-Info "Using cached pack zip: $zipName"
-                } else {
-                    Write-Info "This will download the v${installedVer} $($label.ToLower()) pack to compare against your mods."
-                    Write-Info "The download will be cached for future use (including updates)."
-                    Write-Host ""
-                    if (-not (Confirm-Action "Download $zipName?")) {
-                        Wait-ForKey
-                        continue
+                if ($isNightlyInstance -or $isNightlyChannel -or $hasNightlyState) {
+                    # ── Nightly/Daily scan: use state file or manifest ────────────────
+                    $scanChannel = $channel
+                    if ($scanChannel -eq 'stable' -and $hasNightlyState) {
+                        try {
+                            $stateData = Get-Content -LiteralPath $nightlyStateFile -Raw | ConvertFrom-Json
+                            if ($stateData.Channel) { $scanChannel = $stateData.Channel }
+                            else { $scanChannel = 'daily' }
+                        } catch { $scanChannel = 'daily' }
                     }
-                }
 
-                # Download (or use cache)
-                $tempDir = $script:TempDir
-                if (-not (Test-Path -LiteralPath $tempDir)) {
-                    New-Item -Path $tempDir -ItemType Directory -Force | Out-Null
-                }
-                $zipPath = Join-Path $tempDir $zipName
-
-                if ($cachedZip) {
-                    try { Copy-Item -LiteralPath $cachedZip -Destination $zipPath -Force }
-                    catch {
-                        Write-Err "Could not copy cached file: $($_.Exception.Message)"
-                        Wait-ForKey
-                        continue
-                    }
-                } else {
-                    $downloaded = Invoke-FileDownload -Url $zipUrl -OutPath $zipPath -Description "v${installedVer} $label pack"
-                    if (-not $downloaded) {
-                        Write-Err "Download failed."
-                        Wait-ForKey
-                        continue
-                    }
-                }
-
-                # Read mod filenames from the zip without extracting
-                Write-Step "Reading mod list from pack zip..."
-                $zip = $null
-                try {
-                    Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
-                    $zip = [System.IO.Compression.ZipFile]::OpenRead($zipPath)
-                    $officialModFiles = @()
-                    foreach ($entry in $zip.Entries) {
-                        # Match entries in mods/ directory (could be mods/xxx.jar or folder/mods/xxx.jar)
-                        if ($entry.FullName -match '(?:^|/)mods/([^/]+\.jar)$') {
-                            $officialModFiles += $Matches[1]
+                    # Prefer state file's ManifestMods (matches what's actually installed)
+                    # Fall back to live manifest if no state file exists
+                    $useStateFile = $false
+                    if ($hasNightlyState) {
+                        try {
+                            if (-not $stateData) {
+                                $stateData = Get-Content -LiteralPath $nightlyStateFile -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+                            }
+                            if ($stateData -and $stateData.ManifestMods -and @($stateData.ManifestMods.PSObject.Properties).Count -gt 0) {
+                                $useStateFile = $true
+                            }
+                        } catch {
+                            Write-Log "[SCAN] State file read error: $($_.Exception.Message)"
+                            Write-Warn "Could not read state file. Run an update to regenerate it."
                         }
                     }
-                }
-                catch {
-                    Write-Err "Could not read zip file: $($_.Exception.Message)"
-                    Wait-ForKey
-                    continue
-                }
-                finally {
-                    if ($zip) { try { $zip.Dispose() } catch {} }
-                    # Clean up temp zip (cache already has it)
-                    if (Test-Path -LiteralPath $zipPath) {
-                        try { Remove-Item -LiteralPath $zipPath -Force } catch {}
+
+                    if ($useStateFile) {
+                        Write-Step "Reading installed mod list from state file..."
+                        $targetSide = $Target.ToUpper()
+                        foreach ($prop in $stateData.ManifestMods.PSObject.Properties) {
+                            # ManifestMods stores modname -> filename
+                            $officialModFiles += $prop.Value
+                        }
+                        Write-Info "State file records $($officialModFiles.Count) installed pack mods."
+                        Write-Log "[SCAN] Nightly custom mod scan: $($officialModFiles.Count) official mods from state file, target=$Target"
+                    } else {
+                        Write-Warn "No update has been run through this tool yet for this instance."
+                        Write-Info "Run a daily/experimental update first, then the scan will work accurately."
+                        Write-Info "The update will record the official mod list for future scans."
+                        Wait-ForKey
+                        continue
                     }
+                } else {
+                    # ── Stable scan: download pack zip ─────────────────────────────────
+                    if ([string]::IsNullOrWhiteSpace($installedVer) -or $installedVer -eq 'unknown') {
+                        Write-Warn "No installed version known for $label. Set it in Update Preferences first."
+                        Wait-ForKey
+                        continue
+                    }
+
+                    # Find the release matching the installed version
+                    $allReleases = $script:CachedWebsiteReleases ?? (Get-WebsiteReleases -PackType ($Config.JavaVersion ?? 'java17'))
+                    $matchingRelease = $null
+                    if ($allReleases) {
+                        $matchingRelease = $allReleases | Where-Object { $_.Version -eq $installedVer } | Select-Object -First 1
+                    }
+                    if (-not $matchingRelease) {
+                        Write-Warn "Could not find release v${installedVer} in the version list."
+                        Write-Info "Make sure your installed version is correct (Settings > Update Preferences)."
+                        Wait-ForKey
+                        continue
+                    }
+
+                    $zipUrl = if ($Target -eq 'server') { $matchingRelease.ServerZipUrl } else { $matchingRelease.ClientZipUrl }
+                    $zipName = if ($Target -eq 'server') { $matchingRelease.ServerZipName } else { $matchingRelease.ClientZipName }
+                    if (-not $zipUrl) {
+                        Write-Warn "No $label zip URL found for v${installedVer}."
+                        Wait-ForKey
+                        continue
+                    }
+
+                    $cachedZip = Get-CachedFile -FileName $zipName
+                    if ($cachedZip) {
+                        Write-Info "Using cached pack zip: $zipName"
+                    } else {
+                        Write-Info "This will download the v${installedVer} $($label.ToLower()) pack to compare against your mods."
+                        Write-Info "The download will be cached for future use (including updates)."
+                        Write-Host ""
+                        if (-not (Confirm-Action "Download $zipName?")) {
+                            Wait-ForKey
+                            continue
+                        }
+                    }
+
+                    $tempDir = $script:TempDir
+                    if (-not (Test-Path -LiteralPath $tempDir)) {
+                        New-Item -Path $tempDir -ItemType Directory -Force | Out-Null
+                    }
+                    $zipPath = Join-Path $tempDir $zipName
+
+                    if ($cachedZip) {
+                        try { Copy-Item -LiteralPath $cachedZip -Destination $zipPath -Force }
+                        catch {
+                            Write-Err "Could not copy cached file: $($_.Exception.Message)"
+                            Wait-ForKey
+                            continue
+                        }
+                    } else {
+                        $downloaded = Invoke-FileDownload -Url $zipUrl -OutPath $zipPath -Description "v${installedVer} $label pack"
+                        if (-not $downloaded) {
+                            Write-Err "Download failed."
+                            Wait-ForKey
+                            continue
+                        }
+                    }
+
+                    Write-Step "Reading mod list from pack zip..."
+                    $zip = $null
+                    try {
+                        Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+                        $zip = [System.IO.Compression.ZipFile]::OpenRead($zipPath)
+                        foreach ($entry in $zip.Entries) {
+                            if ($entry.FullName -match '(?:^|/)mods/([^/]+\.jar)$') {
+                                $officialModFiles += $Matches[1]
+                            }
+                        }
+                    }
+                    catch {
+                        Write-Err "Could not read zip file: $($_.Exception.Message)"
+                        Wait-ForKey
+                        continue
+                    }
+                    finally {
+                        if ($zip) { try { $zip.Dispose() } catch {} }
+                        if (Test-Path -LiteralPath $zipPath) {
+                            try { Remove-Item -LiteralPath $zipPath -Force } catch {}
+                        }
+                    }
+
+                    Write-Info "Pack contains $($officialModFiles.Count) mods."
                 }
 
                 if ($officialModFiles.Count -eq 0) {
-                    Write-Warn "No mods found in the pack zip. The zip structure may be unexpected."
+                    Write-Warn "No official mods found. The manifest or zip may be empty."
                     Wait-ForKey
                     continue
                 }
-
-                Write-Info "Pack contains $($officialModFiles.Count) mods."
 
                 # Build base name set from official mod filenames
                 $officialBaseNames = @{}
@@ -2789,17 +2883,17 @@ function Invoke-MainLoop {
             Wait-ForKey
         }
 
-        # Auto-detect installed version if unknown (silent, no output)
-        if ([string]::IsNullOrEmpty($config.InstalledServerVersion) -and -not [string]::IsNullOrEmpty($config.ServerPath) -and (Test-Path -LiteralPath $config.ServerPath)) {
+        # Auto-detect installed version on every startup (handles switching between updater instances)
+        if (-not [string]::IsNullOrEmpty($config.ServerPath) -and (Test-Path -LiteralPath $config.ServerPath)) {
             $detected = Get-InstalledGtnhVersion -InstancePath $config.ServerPath
-            if ($detected -ne 'unknown') {
+            if ($detected -ne 'unknown' -and $detected -ne $config.InstalledServerVersion) {
                 $config.InstalledServerVersion = $detected
                 $configChanged = $true
             }
         }
-        if ([string]::IsNullOrEmpty($config.InstalledClientVersion) -and -not [string]::IsNullOrEmpty($config.ClientInstancePath) -and (Test-Path -LiteralPath $config.ClientInstancePath)) {
+        if (-not [string]::IsNullOrEmpty($config.ClientInstancePath) -and (Test-Path -LiteralPath $config.ClientInstancePath)) {
             $detected = Get-InstalledGtnhVersion -InstancePath $config.ClientInstancePath
-            if ($detected -ne 'unknown') {
+            if ($detected -ne 'unknown' -and $detected -ne $config.InstalledClientVersion) {
                 $config.InstalledClientVersion = $detected
                 $configChanged = $true
             }
