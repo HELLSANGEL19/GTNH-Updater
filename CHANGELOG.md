@@ -6,7 +6,6 @@
 
 * Custom mod scan now works for daily/experimental channels (uses state file mod list)
 * Config diff (re-scan for changes) now works for daily/experimental channels (downloads the correct config zip for the installed version)
-* Caedis version format detection (GTNH-YYYY-MM-DD+NNN) in auto-detection and manual input
 * Setup wizard and Settings now show daily version format examples and accept them
 * Transition decision logging for easier diagnostics
 * External mods now tracked in ManifestMods (fixes false positives in custom mod scan)
@@ -22,7 +21,7 @@
 * Main menu no longer shows "nightly" in version labels (uses channel name or just the date)
 * "Latest daily/experimental" label now uses the user's actual channel name and aligns properly
 * User-facing messages replaced "nightly" with the actual channel name throughout
-* Version input validation now accepts Caedis format (GTNH-YYYY-MM-DD+NNN)
+* Version input validation now accepts format (GTNH-YYYY-MM-DD+NNN)
 * Backup cleanup now correctly finds old backups to prune (was looking for wrong folder name pattern)
 * Java detection in setup wizard no longer leaks temp files
 * Backup safety check prevents accidentally backing up an entire instances folder
