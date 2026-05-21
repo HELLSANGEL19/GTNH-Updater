@@ -1,12 +1,42 @@
 # Changelog
 
+## [0.4.5-beta] - 2026-05-19
+
+### Added
+
+* Running instance detection — blocks updates if the game/server is running (prevents file corruption)
+* Downgrade warning — warns if the target version is older than what's installed
+* Custom mod conflict warning — warns when marking a pack mod as custom (it won't receive updates)
+* SHA1 checksum verification for downloaded mods (catches corrupted downloads from Maven)
+* Download progress now shows estimated time remaining (both pack zip and individual mods)
+* Stale auto-detected config patches are now offered for removal when the pack removes/renames those keys
+* Stale custom mod detection for daily/experimental — warns when custom mod entries don't match any file on disk
+* Interactive custom mod marking during daily/experimental updates — mark removed mods as custom on the fly
+* Search in daily/experimental update plan — type a mod name to find it when 20+ mods are changing
+
+### Improved
+
+* Daily/experimental rollback now uses same-drive Move (instant) instead of Copy for config/scripts folders
+* Update plan box style now matches stable updates (consistent DarkGray borders, version arrow)
+* Custom mod scan for daily/experimental now correctly excludes external mods (UniMixins, Witchery, IC2, etc.) — previously flagged them as custom candidates
+* Custom mod scan now also checks the mods/1.7.10/ subfolder (coremods)
+
+### Fixed
+
+* Full instance backup no longer runs endlessly if the backup directory is inside the instance root (infinite recursion)
+* Backup size estimation capped to prevent hanging on very large directory trees
+
+### Changed
+
+* Config diff detection is now manual-only (Settings > Config Patches > Re-scan) — no longer runs automatically before updates (caused false positives from game-modified config files)
+
 ## [0.4.4-beta] - 2026-05-18
 
 ### Added
 
 * Custom mod scan now works for daily/experimental channels (uses state file mod list)
 * Config diff (re-scan for changes) now works for daily/experimental channels (downloads the correct config zip for the installed version)
-* Caedis version format detection (GTNH-YYYY-MM-DD+NNN) in auto-detection and manual input
+* GTNH daily version format detection (GTNH-YYYY-MM-DD+NNN) in auto-detection and manual input
 * Setup wizard and Settings now show daily version format examples and accept them
 * Transition decision logging for easier diagnostics
 * External mods now tracked in ManifestMods (fixes false positives in custom mod scan)
@@ -22,7 +52,7 @@
 * Main menu no longer shows "nightly" in version labels (uses channel name or just the date)
 * "Latest daily/experimental" label now uses the user's actual channel name and aligns properly
 * User-facing messages replaced "nightly" with the actual channel name throughout
-* Version input validation now accepts Caedis format (GTNH-YYYY-MM-DD+NNN)
+* Version input validation now accepts GTNH daily format (GTNH-YYYY-MM-DD+NNN)
 * Backup cleanup now correctly finds old backups to prune (was looking for wrong folder name pattern)
 * Java detection in setup wizard no longer leaks temp files
 * Backup safety check prevents accidentally backing up an entire instances folder

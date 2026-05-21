@@ -89,7 +89,9 @@ function Invoke-FullInstanceBackup {
     # Estimate instance size (from the parent directory)
     $instanceSizeGB = $null
     try {
+        # Use a timeout-safe approach: if the directory is very large, cap the scan
         $bytes = (Get-ChildItem -LiteralPath $backupSourceDir -Recurse -File -ErrorAction SilentlyContinue |
+            Select-Object -First 50000 |
             Measure-Object -Property Length -Sum).Sum
         $instanceSizeGB = [math]::Round($bytes / 1GB, 2)
     } catch {}
@@ -146,8 +148,34 @@ function Invoke-FullInstanceBackup {
     Write-Info "  Source: $backupSourceDir"
 
     try {
+        # Safety: detect if backup dir is inside the source dir (would cause infinite recursion)
+        $resolvedBackupDir = [System.IO.Path]::GetFullPath($backupDir).TrimEnd([System.IO.Path]::DirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
+        $resolvedSourceDir = [System.IO.Path]::GetFullPath($backupSourceDir).TrimEnd([System.IO.Path]::DirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
+        $backupInsideSource = $resolvedBackupDir.StartsWith($resolvedSourceDir, [System.StringComparison]::OrdinalIgnoreCase)
+
+        if ($backupInsideSource) {
+            Write-Log "[BACKUP] Backup dir is inside source dir, will exclude it from copy"
+            $excludeDir = [System.IO.Path]::GetFullPath($backupDir)
+        } else {
+            $excludeDir = $null
+        }
+
+        # Also exclude rollback snapshot directories (they live next to the instance)
+        $rollbackDirName = ".gtnh-rollback-${Target}"
+        $rollbackNightlyDirName = ".gtnh-rollback-nightly-${Target}"
+
         # Copy entire instance root directory (one level above configured path)
         Get-ChildItem -LiteralPath $backupSourceDir | ForEach-Object {
+            # Skip the backup directory itself to prevent infinite recursion
+            if ($excludeDir -and $_.FullName -ieq $excludeDir) {
+                Write-Log "[BACKUP] Skipping backup dir inside source: $($_.Name)"
+                return
+            }
+            # Skip rollback snapshot directories
+            if ($_.Name -eq $rollbackDirName -or $_.Name -eq $rollbackNightlyDirName) {
+                Write-Log "[BACKUP] Skipping rollback dir: $($_.Name)"
+                return
+            }
             $dest = Join-Path $backupPath $_.Name
             Copy-Item -LiteralPath $_.FullName -Destination $dest -Recurse -Force
         }

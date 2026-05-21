@@ -227,9 +227,47 @@ function Invoke-ConfigPatches {
             Write-Host "    - $($issue.Problem)$desc" -ForegroundColor DarkYellow
         }
         Write-Host ""
+
+        # Auto-remove broken patches that were auto-detected (not manually created)
+        # Auto-detected patches have Source = 'auto'
+        $autoDetectedBroken = @($issues | Where-Object {
+            $_.Patch.Source -eq 'auto' -or (-not $_.Patch.Description -and -not $_.Patch.Source)
+        })
+        if ($autoDetectedBroken.Count -gt 0) {
+            Write-Host ""
+            Write-Info "$($autoDetectedBroken.Count) auto-detected patch(es) are stale (keys no longer exist in pack):"
+            foreach ($ab in $autoDetectedBroken) {
+                Write-Host "    $($ab.Patch.FilePath) -> $($ab.Patch.Key) = $($ab.Patch.Value)" -ForegroundColor DarkGray
+            }
+            Write-Host ""
+            if (Confirm-Action "Remove these stale patches? (the pack no longer has these settings)") {
+                $brokenKeys = @($autoDetectedBroken | ForEach-Object {
+                    "$($_.Patch.FilePath)|$($_.Patch.Key)|$($_.Patch.Section)"
+                })
+                $Config.ConfigPatches = @($Config.ConfigPatches | Where-Object {
+                    $patchKey = "$($_.FilePath)|$($_.Key)|$($_.Section)"
+                    $patchKey -notin $brokenKeys
+                })
+                Save-Config -Config $Config
+                Write-Success "Removed $($autoDetectedBroken.Count) stale patch(es)."
+                Write-Log "[PATCHER] User confirmed removal of $($autoDetectedBroken.Count) stale auto-detected patches"
+            } else {
+                Write-Info "Keeping stale patches. Remove manually in Settings > Config Patches if needed."
+                Write-Log "[PATCHER] User kept $($autoDetectedBroken.Count) stale auto-detected patches"
+            }
+        }
+
+        # Warn about manually-created broken patches (user needs to fix these)
+        $manualBroken = @($issues | Where-Object {
+            $_.Patch.Source -ne 'auto' -and ($_.Patch.Description -or $_.Patch.Source)
+        })
+        if ($manualBroken.Count -gt 0) {
+            Write-Info "$($manualBroken.Count) manually-created patch(es) need attention."
+            Write-Info "Fix or remove them in Settings > Config Patches."
+        }
+
         if ($validPatches.Count -gt 0) {
             Write-Info "$($validPatches.Count) valid patch(es) will still be applied."
-            Write-Info "Fix or remove broken patches in Settings > Config Patches."
         } else {
             Write-Warn "No valid patches to apply."
             return

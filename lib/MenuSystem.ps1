@@ -1294,6 +1294,59 @@ function Invoke-CustomModSettingsMenu {
                             # ManifestMods stores modname -> filename
                             $officialModFiles += $prop.Value
                         }
+
+                        # Also check for external mods on disk that may not be in older state files
+                        # (state files created before the external mod tracking fix)
+                        $scanModsDir = Join-Path $instancePath 'mods'
+                        try {
+                            $scanChannel = $stateData.Channel ?? 'daily'
+                            $scanManifest = Get-NightlyManifest -Channel $scanChannel
+                            if ($scanManifest -and $scanManifest.external_mods) {
+                                $extAdded = 0
+                                foreach ($extProp in $scanManifest.external_mods.PSObject.Properties) {
+                                    $extModName = $extProp.Name
+                                    $extModInfo = $extProp.Value
+                                    $extSide = $extModInfo.side.ToUpper()
+                                    if ($extSide -ne 'BOTH' -and $extSide -ne $targetSide -and $extSide -ne 'BOTH_JAVA9') { continue }
+
+                                    # Build expected filename
+                                    $fileModName = if ($extModName -eq 'UniMixins') { "+$extModName" } else { $extModName }
+                                    $expectedJar = "${fileModName}-$($extModInfo.version).jar"
+
+                                    # Check if already tracked
+                                    $alreadyTracked = $false
+                                    foreach ($of in $officialModFiles) {
+                                        if ($of -ieq $expectedJar) { $alreadyTracked = $true; break }
+                                    }
+                                    if ($alreadyTracked) { continue }
+
+                                    # Check if it exists on disk — if so, add to official list
+                                    if (Test-Path -LiteralPath $scanModsDir) {
+                                        $diskMatch = Get-ChildItem -LiteralPath $scanModsDir -Filter '*.jar' -File -ErrorAction SilentlyContinue |
+                                            Where-Object { $_.Name -ieq $expectedJar } | Select-Object -First 1
+                                        if ($diskMatch) {
+                                            $officialModFiles += $diskMatch.Name
+                                            $extAdded++
+                                        } else {
+                                            # Try base-name match
+                                            $extBase = Get-ModBaseName -FileName $expectedJar
+                                            $baseMatch = Get-ChildItem -LiteralPath $scanModsDir -Filter '*.jar' -File -ErrorAction SilentlyContinue |
+                                                Where-Object { (Get-ModBaseName -FileName $_.Name) -eq $extBase } | Select-Object -First 1
+                                            if ($baseMatch) {
+                                                $officialModFiles += $baseMatch.Name
+                                                $extAdded++
+                                            }
+                                        }
+                                    }
+                                }
+                                if ($extAdded -gt 0) {
+                                    Write-Log "[SCAN] Added $extAdded external mod(s) from live manifest"
+                                }
+                            }
+                        } catch {
+                            Write-Log "[SCAN] Could not fetch manifest for external mod check: $($_.Exception.Message)"
+                        }
+
                         Write-Info "State file records $($officialModFiles.Count) installed pack mods."
                         Write-Log "[SCAN] Nightly custom mod scan: $($officialModFiles.Count) official mods from state file, target=$Target"
                     } else {
@@ -1413,6 +1466,11 @@ function Invoke-CustomModSettingsMenu {
 
                 # Get local JARs and categorize
                 $localJars = @(Get-ChildItem -LiteralPath $modsDir -Filter '*.jar' -File | ForEach-Object { $_.Name })
+                # Also check mods/1.7.10/ subfolder (coremods)
+                $subModsDir = Join-Path $modsDir '1.7.10'
+                if (Test-Path -LiteralPath $subModsDir) {
+                    $localJars += @(Get-ChildItem -LiteralPath $subModsDir -Filter '*.jar' -File | ForEach-Object { $_.Name })
+                }
                 $candidates = @()
                 $alreadyTrackedFound = @()
 
@@ -3063,7 +3121,8 @@ function Invoke-MainLoop {
                         if (-not $targets.Server -and -not $targets.Client) { break }
 
                         if ($targets.Server) {
-                            Invoke-NightlyUpdate -Config $config -Target 'server' -Channel $channel
+                            $skipMenu = $targets.Client  # Skip post-menu if client update follows
+                            Invoke-NightlyUpdate -Config $config -Target 'server' -Channel $channel -SkipPostMenu:$skipMenu
                         }
                         if ($targets.Client) {
                             Invoke-NightlyUpdate -Config $config -Target 'client' -Channel $channel

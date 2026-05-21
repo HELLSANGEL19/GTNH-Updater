@@ -422,8 +422,23 @@ function Invoke-FileDownload {
 
                     # Calculate speed (update every 500ms to avoid flicker)
                     if ($speedTimer.ElapsedMilliseconds -gt 500) {
-                        $speedMBs = [math]::Round(($speedBytes / 1MB) / ($speedTimer.ElapsedMilliseconds / 1000), 1)
-                        $speedLabel = "  ${speedMBs} MB/s"
+                        $speedBytesPerSec = ($speedBytes / ($speedTimer.ElapsedMilliseconds / 1000))
+                        $speedMBs = [math]::Round($speedBytesPerSec / 1MB, 1)
+                        if ($speedMBs -gt 0) {
+                            $remainingBytes = $totalBytes - $totalRead
+                            $etaSeconds = [math]::Ceiling($remainingBytes / $speedBytesPerSec)
+                            if ($etaSeconds -lt 60) {
+                                $speedLabel = "  ${speedMBs} MB/s  ~${etaSeconds}s"
+                            } elseif ($etaSeconds -lt 3600) {
+                                $etaMin = [math]::Floor($etaSeconds / 60)
+                                $etaSec = $etaSeconds % 60
+                                $speedLabel = "  ${speedMBs} MB/s  ~${etaMin}m${etaSec}s"
+                            } else {
+                                $speedLabel = "  ${speedMBs} MB/s"
+                            }
+                        } else {
+                            $speedLabel = ''
+                        }
                         $speedBytes = 0
                         $speedTimer.Restart()
                     }

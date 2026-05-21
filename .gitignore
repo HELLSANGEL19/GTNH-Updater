@@ -6,6 +6,7 @@ backups/
 .nightly-updater/
 staging-*/
 .gtnh-rollback-*/
+.gtnh-rollback-nightly-*/
 
 # User config (contains local paths)
 gtnh-updater-config.json
