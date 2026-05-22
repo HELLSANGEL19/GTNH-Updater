@@ -890,16 +890,19 @@ function Invoke-NightlyUpdate {
         }
     }
 
-    # Clean up rollback snapshot on success
-    Remove-TempDir $nightlyRollbackDir
+    # Keep rollback snapshot until next update (allows user to rollback if game crashes on launch)
+    # The snapshot will be overwritten by the next update's Step 5.
+    if ($nightlyRollbackDir) {
+        Write-Log "[NIGHTLY] Rollback snapshot preserved at: $nightlyRollbackDir"
+    }
 
     } # end try
     finally {
         # Ensure temp directories are cleaned up even on unhandled exceptions
         Remove-TempDir $preserveTempDir
-        # Rollback dir may still exist if an unhandled error occurred after snapshot
-        # but before the success cleanup above
-        Remove-TempDir $nightlyRollbackDir
+        # Note: rollback snapshot is intentionally kept on success — allows user to rollback
+        # if the game crashes after a successful update. On failure, the snapshot was already
+        # consumed by the automatic rollback offered earlier in the flow.
     }
 }
 

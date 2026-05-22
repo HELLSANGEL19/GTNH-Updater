@@ -1133,8 +1133,8 @@ function Invoke-StableUpdate {
             Remove-TempDir $stagingDir
             Write-Info "Staging folder cleaned up."
         }
-        # Clean up rollback snapshot on success (not needed anymore)
-        if ($updateSucceeded) { Remove-TempDir $rollbackDir }
+        # Keep rollback snapshot until next update (allows user to rollback if game crashes on launch)
+        # if ($updateSucceeded) { Remove-TempDir $rollbackDir }
         # Clean up temp zip file (already cached by Invoke-FileDownload)
         if ($zipPath -and (Test-Path -LiteralPath $zipPath)) {
             try { Remove-Item -LiteralPath $zipPath -Force } catch {}

@@ -785,10 +785,28 @@ function Invoke-BackupsAndCacheMenu {
     while ($true) {
         Write-Header "Settings > Backups and Cache"
 
+        # Check for available rollback snapshots
+        $rollbackAvailable = @()
+        foreach ($tgt in @('server', 'client')) {
+            $instPath = if ($tgt -eq 'server') { $Config.ServerPath } else { $Config.ClientInstancePath }
+            if ([string]::IsNullOrEmpty($instPath)) { continue }
+            $parentDir = Split-Path -Parent $instPath
+            # Check both stable and nightly snapshot locations
+            foreach ($pattern in @(".gtnh-rollback-${tgt}", ".gtnh-rollback-nightly-${tgt}")) {
+                $snapPath = Join-Path $parentDir $pattern
+                if (Test-Path -LiteralPath $snapPath) {
+                    $rollbackAvailable += [PSCustomObject]@{ Target = $tgt; Path = $snapPath; Name = $pattern }
+                }
+            }
+        }
+
         Write-MenuOption "1" "Backup settings"
         Write-MenuOption "2" "Manage backups"
         Write-MenuOption "3" "Manage download cache"
         Write-MenuOption "4" "Create backup now"
+        if ($rollbackAvailable.Count -gt 0) {
+            Write-MenuOption "5" "Rollback last update ($($rollbackAvailable.Count) snapshot(s) available)"
+        }
         Write-Host ""
         Write-MenuOption "R" "Return"
 
@@ -799,11 +817,11 @@ function Invoke-BackupsAndCacheMenu {
                 # Backup settings sub-menu
                 Write-Header "Settings > Backup Settings"
 
-                Write-Host "  Enabled:   " -NoNewline -ForegroundColor Gray
-                Write-Host "$($Config.BackupEnabled ? 'Yes' : 'No')" -ForegroundColor Cyan
-                Write-Host "  Directory: " -NoNewline -ForegroundColor Gray
+                Write-Host "  Pre-update backup: " -NoNewline -ForegroundColor Gray
+                Write-Host "$($Config.BackupEnabled ? 'Yes (full backup before each update)' : 'No (rollback snapshots only)')" -ForegroundColor Cyan
+                Write-Host "  Directory:      " -NoNewline -ForegroundColor Gray
                 Write-Host "$($Config.BackupDir)" -ForegroundColor Cyan
-                Write-Host "  Retention: " -NoNewline -ForegroundColor Gray
+                Write-Host "  Retention:      " -NoNewline -ForegroundColor Gray
                 Write-Host "$($Config.BackupRetention) backups" -ForegroundColor Cyan
                 Write-Host ""
                 Write-MenuOption "1" "Toggle backup enabled/disabled"
@@ -816,7 +834,15 @@ function Invoke-BackupsAndCacheMenu {
                     '1' {
                         $Config.BackupEnabled = -not $Config.BackupEnabled
                         Save-Config -Config $Config
-                        Write-Success "Backups $($Config.BackupEnabled ? 'enabled' : 'disabled')."
+                        if ($Config.BackupEnabled) {
+                            Write-Success "Pre-update backups enabled."
+                            Write-Info "A full backup (including world data) will be created before each update."
+                            Write-Info "Rollback snapshots are always created regardless of this setting."
+                        } else {
+                            Write-Success "Pre-update backups disabled."
+                            Write-Info "Rollback snapshots still protect your mods/config before each update."
+                            Write-Info "Use 'Create backup now' for manual full backups when needed."
+                        }
                     }
                     '2' {
                         $newDir = Read-UserInput "Enter backup directory path" -Default $Config.BackupDir
@@ -856,7 +882,7 @@ function Invoke-BackupsAndCacheMenu {
                 Invoke-CacheMenu
             }
             '4' {
-                # Quick backup — same logic as the Backup Menu's create option
+                # Create backup now
                 $hasServer = -not [string]::IsNullOrEmpty($Config.ServerPath)
                 $hasClient = -not [string]::IsNullOrEmpty($Config.ClientInstancePath)
                 if (-not $hasServer -and -not $hasClient) {
@@ -876,10 +902,69 @@ function Invoke-BackupsAndCacheMenu {
                     $doServer = $hasServer; $doClient = $hasClient
                 }
                 if ($doServer) {
-                    Invoke-FullInstanceBackup -Config $Config -InstancePath $Config.ServerPath -Target 'server'
+                    $null = Invoke-FullInstanceBackup -Config $Config -InstancePath $Config.ServerPath -Target 'server'
                 }
                 if ($doClient) {
-                    Invoke-FullInstanceBackup -Config $Config -InstancePath $Config.ClientInstancePath -Target 'client'
+                    $null = Invoke-FullInstanceBackup -Config $Config -InstancePath $Config.ClientInstancePath -Target 'client'
+                }
+                Wait-ForKey
+            }
+            '5' {
+                # Rollback last update from persisted snapshot
+                if ($rollbackAvailable.Count -eq 0) {
+                    Write-Warn "No rollback snapshots available."
+                    Write-Info "Snapshots are created automatically before each update."
+                    Wait-ForKey
+                    continue
+                }
+
+                Write-Header "Rollback Last Update"
+                Write-Host ""
+                Write-Warn "This will restore your mods, config, and scripts to their state"
+                Write-Warn "BEFORE the last update. World data is not affected."
+                Write-Host ""
+
+                Write-Info "Available snapshots:"
+                for ($ri = 0; $ri -lt $rollbackAvailable.Count; $ri++) {
+                    $snap = $rollbackAvailable[$ri]
+                    $snapAge = ''
+                    try {
+                        $snapDir = Get-Item -LiteralPath $snap.Path
+                        $hours = [math]::Round(((Get-Date) - $snapDir.LastWriteTime).TotalHours, 0)
+                        $snapAge = if ($hours -lt 1) { ' (< 1 hour ago)' }
+                                   elseif ($hours -lt 24) { " (~${hours}h ago)" }
+                                   else { " (~$([math]::Floor($hours / 24))d ago)" }
+                    } catch {}
+                    Write-Host "  [$($ri + 1)] " -NoNewline -ForegroundColor White
+                    Write-Host "$($snap.Target)" -NoNewline -ForegroundColor Cyan
+                    Write-Host " — $($snap.Name)$snapAge" -ForegroundColor Gray
+                }
+                Write-Host ""
+                Write-MenuOption "R" "Cancel"
+
+                $rollChoice = Read-MenuChoice "Select snapshot to restore"
+                if ($rollChoice -eq 'r' -or $rollChoice -eq 'R') { Wait-ForKey; continue }
+
+                $rollIdx = 0
+                if ([int]::TryParse($rollChoice, [ref]$rollIdx) -and $rollIdx -ge 1 -and $rollIdx -le $rollbackAvailable.Count) {
+                    $selectedSnap = $rollbackAvailable[$rollIdx - 1]
+                    $rollTarget = $selectedSnap.Target
+                    $rollInstancePath = if ($rollTarget -eq 'server') { $Config.ServerPath } else { $Config.ClientInstancePath }
+
+                    Write-Host ""
+                    if (Confirm-Action "Restore $rollTarget to pre-update state? This replaces mods/config/scripts.") {
+                        $rollbackOk = Invoke-RollbackFromSnapshot -RollbackDir $selectedSnap.Path `
+                            -InstancePath $rollInstancePath -Target $rollTarget
+                        if ($rollbackOk) {
+                            Write-Host ""
+                            Write-Success "Rollback complete. Your $rollTarget is back to its pre-update state."
+                            Write-Info "The snapshot has been preserved — you can rollback again if needed."
+                        }
+                    } else {
+                        Write-Info "Rollback cancelled."
+                    }
+                } else {
+                    Write-Warn "Invalid selection."
                 }
                 Wait-ForKey
             }
@@ -2804,22 +2889,24 @@ function Invoke-MainLoop {
         # Clean up stale files from previous runs
         Invoke-StartupCleanup
 
-        # Check for leftover rollback snapshots (indicates a previous update may have been interrupted)
-        $tempDir = $script:TempDir
-        if (Test-Path -LiteralPath $tempDir) {
-            $rollbackDirs = @(Get-ChildItem -LiteralPath $tempDir -Directory -Filter 'rollback-*' -ErrorAction SilentlyContinue)
-            if ($rollbackDirs.Count -gt 0) {
-                Write-Host ""
-                Write-Warn "Found rollback snapshot(s) from a previous update that may have been interrupted."
-                foreach ($rd in $rollbackDirs) {
-                    Write-Info "  - $($rd.Name)"
+        # Check for rollback snapshots (available for manual rollback if game crashes after update)
+        $snapshotFound = $false
+        foreach ($tgt in @('server', 'client')) {
+            $instPath = if ($tgt -eq 'server') { $config.ServerPath } else { $config.ClientInstancePath }
+            if ([string]::IsNullOrEmpty($instPath)) { continue }
+            $parentDir = Split-Path -Parent $instPath
+            if (-not (Test-Path -LiteralPath $parentDir)) { continue }
+            foreach ($pattern in @(".gtnh-rollback-${tgt}", ".gtnh-rollback-nightly-${tgt}")) {
+                if (Test-Path -LiteralPath (Join-Path $parentDir $pattern)) {
+                    $snapshotFound = $true
+                    break
                 }
-                Write-Host ""
-                Write-Info "If your instance is broken, you can restore from these snapshots in Settings > Backups."
-                Write-Info "Otherwise they will be cleaned up automatically."
-                Write-Host ""
-                Wait-ForKey
             }
+            if ($snapshotFound) { break }
+        }
+        if ($snapshotFound) {
+            Write-Info "Rollback snapshot available — if your game crashes after an update, use Settings > Backups and Cache > Rollback."
+            Write-Host ""
         }
 
         # Profile picker: show only when more than one profile exists

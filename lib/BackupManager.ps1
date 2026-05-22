@@ -2,21 +2,22 @@
 # Group 14: Backup Manager - Full instance backups with restore and retention
 # ============================================================================
 # Functions:
-#   Invoke-FullInstanceBackup   - Full backup of the entire instance (one level
-#                                  above configured path). Checks disk space first.
+#   Invoke-FullInstanceBackup   - Full backup of the instance. Server: backs up
+#                                  the server folder. Client: backs up the Prism
+#                                  instance root (parent of .minecraft).
 #   Invoke-RestoreBackup        - Restore a backup by copying its contents back
 #                                  to the instance, replacing current folders.
 #   Invoke-BackupCleanup        - Enforce retention count, delete oldest beyond limit
 #   Invoke-BackupMenu           - Sub-menu: view, restore, clean, open folder
 #   Save-RollbackSnapshot       - Save a lightweight snapshot before update for
-#                                  quick rollback without needing AMP
+#                                  quick rollback (persists until next update)
 #   Invoke-RollbackFromSnapshot - Restore from the pre-update snapshot
 #
 # Backups are stored in the configured BackupDir with timestamped folder names.
 # Format: gtnh-full-<target>-yyyy-MM-dd_HHmmss
 #
-# Rollback snapshots are stored in .temp/rollback-<target>/ and are
-# automatically cleaned up after a successful update.
+# Rollback snapshots are stored next to the instance as .gtnh-rollback-<target>/
+# and persist until the next update overwrites them.
 # ============================================================================
 
 function Invoke-FullInstanceBackup {
@@ -64,19 +65,36 @@ function Invoke-FullInstanceBackup {
         New-Item -Path $backupDir -ItemType Directory -Force | Out-Null
     }
 
-    # Determine the backup root: one level above the configured instance path.
-    # For client: .minecraft -> instance root (has mmc-pack.json, patches/, libraries/)
-    # For server: Minecraft -> AMP/panel instance root (has server wrapper configs)
-    $backupSourceDir = Split-Path -Parent $InstancePath
+    # Determine the backup root based on target type.
+    # For client: one level above .minecraft (Prism instance root has libraries/, patches/, mmc-pack.json)
+    # For server: the instance path itself (server folder contains everything needed)
+    $backupSourceDir = if ($Target -eq 'client') {
+        $p = Split-Path -Parent $InstancePath
+        if ($p.Length -gt 1 -and $p.EndsWith([System.IO.Path]::DirectorySeparatorChar)) {
+            $p = $p.TrimEnd([System.IO.Path]::DirectorySeparatorChar)
+        }
+        $p
+    } else {
+        # Normalize: remove trailing separator unless it's a drive root (e.g., D:\)
+        $p = $InstancePath
+        if ($p.Length -gt 3 -and $p.EndsWith([System.IO.Path]::DirectorySeparatorChar)) {
+            $p = $p.TrimEnd([System.IO.Path]::DirectorySeparatorChar)
+        }
+        $p
+    }
 
     # Safety check: ensure we're not backing up something too broad.
     # If the parent directory contains more than 10 subdirectories that look like
     # other game instances, we're probably too high (e.g., backing up all of "instances/")
+    if (-not (Test-Path -LiteralPath $backupSourceDir)) {
+        Write-Err "Backup source directory not found: $backupSourceDir"
+        return $false
+    }
     $parentSubDirs = @(Get-ChildItem -LiteralPath $backupSourceDir -Directory -ErrorAction SilentlyContinue)
     if ($parentSubDirs.Count -gt 10) {
         $modsCount = @($parentSubDirs | Where-Object {
-            Test-Path -LiteralPath (Join-Path $_.FullName 'mods') -or
-            Test-Path -LiteralPath (Join-Path $_.FullName '.minecraft')
+            (Test-Path -LiteralPath (Join-Path $_.FullName 'mods')) -or
+            (Test-Path -LiteralPath (Join-Path $_.FullName '.minecraft'))
         }).Count
         if ($modsCount -gt 3) {
             Write-Warn "Backup source '$backupSourceDir' appears to contain multiple game instances ($($parentSubDirs.Count) subdirs)."
@@ -86,15 +104,28 @@ function Invoke-FullInstanceBackup {
         }
     }
 
-    # Estimate instance size (from the parent directory)
+    # Estimate instance size (excluding internal dirs that won't be backed up)
+    # Skip for silent/automated calls (no confirmation prompt shown anyway)
+    # These are the same dirs excluded during the actual backup
+    $internalExcludes = @('.temp', 'cache', 'logs', 'crash-reports', 'backups', 'backup', 'simplebackups')
     $instanceSizeGB = $null
-    try {
-        # Use a timeout-safe approach: if the directory is very large, cap the scan
-        $bytes = (Get-ChildItem -LiteralPath $backupSourceDir -Recurse -File -ErrorAction SilentlyContinue |
-            Select-Object -First 50000 |
-            Measure-Object -Property Length -Sum).Sum
-        $instanceSizeGB = [math]::Round($bytes / 1GB, 2)
-    } catch {}
+    if (-not $Silent) {
+        try {
+            Write-Host "  Scanning..." -NoNewline -ForegroundColor Gray
+            $bytes = 0
+            $srcLen = $backupSourceDir.Length + 1
+            Get-ChildItem -LiteralPath $backupSourceDir -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
+                $rel = $_.FullName.Substring($srcLen)
+                if ($rel.Contains([System.IO.Path]::DirectorySeparatorChar)) {
+                    $top = $rel.Split([System.IO.Path]::DirectorySeparatorChar)[0]
+                    if ($top.ToLower() -in $internalExcludes) { return }
+                }
+                $bytes += $_.Length
+            }
+            $instanceSizeGB = [math]::Round($bytes / 1GB, 2)
+            Write-Host "`r  Instance size: ~${instanceSizeGB} GB                    " -ForegroundColor Gray
+        } catch {}
+    }
 
     # Check free space on backup drive
     try {
@@ -135,69 +166,194 @@ function Invoke-FullInstanceBackup {
     }
 
     if (-not $Silent -and $instanceSizeGB) {
-        Write-Info "Instance size: ~${instanceSizeGB} GB (backing up full instance root)"
-        if (-not (Confirm-Action "Create full $Target backup (~${instanceSizeGB} GB)?")) { return $null }
+        if (-not (Confirm-Action "Create full $Target backup?")) { return $null }
     }
 
     $timestamp      = Get-Date -Format 'yyyy-MM-dd_HHmmss'
     $backupName     = "gtnh-full-${Target}-${timestamp}"
-    $backupPath     = Join-Path $backupDir $backupName
+    $backupZipName  = "${backupName}.zip"
+    $backupPath     = Join-Path $backupDir $backupZipName
 
-    New-Item -Path $backupPath -ItemType Directory -Force | Out-Null
-    Write-Step "Creating full backup: $backupName"
+    Write-Step "Creating backup: $backupZipName"
     Write-Info "  Source: $backupSourceDir"
 
     try {
-        # Safety: detect if backup dir is inside the source dir (would cause infinite recursion)
+        # ── Build exclusion list ──────────────────────────────────────────────
+        $excludeDirs = @()
+
+        # Always exclude internal/temp directories (regenerated, not critical)
+        # $internalExcludes is defined earlier (used for both estimate and actual backup)
+        $actualInternalExcludes = @()
+        foreach ($ie in $internalExcludes) {
+            if (Test-Path -LiteralPath (Join-Path $backupSourceDir $ie)) {
+                $excludeDirs += $ie
+                $actualInternalExcludes += $ie
+            }
+        }
+
+        # Detect if backup dir is inside the source dir (would cause infinite recursion)
         $resolvedBackupDir = [System.IO.Path]::GetFullPath($backupDir).TrimEnd([System.IO.Path]::DirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
         $resolvedSourceDir = [System.IO.Path]::GetFullPath($backupSourceDir).TrimEnd([System.IO.Path]::DirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
         $backupInsideSource = $resolvedBackupDir.StartsWith($resolvedSourceDir, [System.StringComparison]::OrdinalIgnoreCase)
-
         if ($backupInsideSource) {
-            Write-Log "[BACKUP] Backup dir is inside source dir, will exclude it from copy"
-            $excludeDir = [System.IO.Path]::GetFullPath($backupDir)
-        } else {
-            $excludeDir = $null
+            $excludeDirs += Split-Path -Leaf $backupDir
+            Write-Log "[BACKUP] Excluding backup dir inside source"
         }
 
-        # Also exclude rollback snapshot directories (they live next to the instance)
-        $rollbackDirName = ".gtnh-rollback-${Target}"
-        $rollbackNightlyDirName = ".gtnh-rollback-nightly-${Target}"
+        # Exclude rollback snapshot directories
+        $excludeDirs += ".gtnh-rollback-${Target}"
+        $excludeDirs += ".gtnh-rollback-nightly-${Target}"
 
-        # Copy entire instance root directory (one level above configured path)
-        Get-ChildItem -LiteralPath $backupSourceDir | ForEach-Object {
-            # Skip the backup directory itself to prevent infinite recursion
-            if ($excludeDir -and $_.FullName -ieq $excludeDir) {
-                Write-Log "[BACKUP] Skipping backup dir inside source: $($_.Name)"
-                return
-            }
-            # Skip rollback snapshot directories
-            if ($_.Name -eq $rollbackDirName -or $_.Name -eq $rollbackNightlyDirName) {
-                Write-Log "[BACKUP] Skipping rollback dir: $($_.Name)"
-                return
-            }
-            $dest = Join-Path $backupPath $_.Name
-            Copy-Item -LiteralPath $_.FullName -Destination $dest -Recurse -Force
+        # Exclude updater script directory if inside source
+        $scriptDirResolved = [System.IO.Path]::GetFullPath($script:ScriptDir).TrimEnd([System.IO.Path]::DirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
+        $scriptInsideSource = $scriptDirResolved.StartsWith($resolvedSourceDir, [System.StringComparison]::OrdinalIgnoreCase)
+        if ($scriptInsideSource -and $scriptDirResolved -ne $resolvedSourceDir) {
+            $excludeDirs += Split-Path -Leaf $script:ScriptDir
+            Write-Log "[BACKUP] Excluding updater script dir inside source"
         }
 
-        Write-Success "Full backup complete: $backupName"
-        Write-Log "[BACKUP] Full backup created: $backupPath"
+        # Exclude lock file and temp files
+        $excludeFiles = @('.gtnh-updater.lock', '.gtnh-nightly-state.json.tmp')
 
-        # Prune old full backups (keep BackupRetention, default 2 for full backups)
-        $retention = [math]::Max(1, ($Config.BackupRetention ?? 2))
-        $oldFull = Get-ChildItem -LiteralPath $backupDir -Directory -Filter "gtnh-full-${Target}-*" |
+        Write-Log "[BACKUP] Exclusions: dirs=[$($excludeDirs -join ', ')], files=[$($excludeFiles -join ', ')]"
+
+        # ── Create zip backup ─────────────────────────────────────────────────
+        $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+
+        Add-Type -AssemblyName System.IO.Compression -ErrorAction SilentlyContinue
+        Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+
+        # Build exclusion lookup sets for fast matching
+        $excludeDirSet = @{}
+        foreach ($xd in $excludeDirs) { $excludeDirSet[$xd.ToLower()] = $true }
+        $excludeFileSet = @{}
+        foreach ($xf in $excludeFiles) { $excludeFileSet[$xf.ToLower()] = $true }
+
+        # Scan files first (may take a moment on large instances)
+        if (-not $Silent) {
+            Write-Host "  Scanning files..." -NoNewline -ForegroundColor Gray
+        }
+        $allFiles = Get-ChildItem -LiteralPath $backupSourceDir -Recurse -File -ErrorAction SilentlyContinue
+        $totalFiles = @($allFiles).Count
+        if (-not $Silent) {
+            Write-Host "`r  Compressing $totalFiles files...                    " -ForegroundColor Gray
+        }
+
+        # Create zip with Fastest compression
+        $zipStream = [System.IO.File]::Create($backupPath)
+        $zip = [System.IO.Compression.ZipArchive]::new($zipStream, 'Create')
+
+        $fileCount = 0
+        $sourceLen = $backupSourceDir.Length + 1  # +1 for the path separator
+        foreach ($file in $allFiles) {
+            # Check if file is in an excluded directory (only for files in subdirectories)
+            $relativePath = $file.FullName.Substring($sourceLen)
+            if ($relativePath.Contains([System.IO.Path]::DirectorySeparatorChar)) {
+                $topDir = $relativePath.Split([System.IO.Path]::DirectorySeparatorChar)[0]
+                if ($excludeDirSet.ContainsKey($topDir.ToLower())) { continue }
+            }
+            if ($excludeFileSet.ContainsKey($file.Name.ToLower())) { continue }
+
+            # Add to zip — skip compression on already-compressed files
+            $entryName = $relativePath -replace '\\', '/'
+            $compressionLevel = if ($file.Extension -imatch '^\.(jar|zip|gz|7z|rar|tar|lz4|zst|png|jpg|jpeg|ogg|mp3|mp4|webp|gif|bmp)$') {
+                [System.IO.Compression.CompressionLevel]::NoCompression
+            } else {
+                [System.IO.Compression.CompressionLevel]::Fastest
+            }
+            try {
+                $entry = $zip.CreateEntry($entryName, $compressionLevel)
+                $entryStream = $entry.Open()
+                try {
+                    $fileStream = [System.IO.File]::OpenRead($file.FullName)
+                    try {
+                        $fileStream.CopyTo($entryStream)
+                    } finally {
+                        $fileStream.Dispose()
+                    }
+                } finally {
+                    $entryStream.Dispose()
+                }
+                $fileCount++
+            } catch {
+                Write-Log "[BACKUP] Skipped (locked/error): $relativePath"
+            }
+
+            # Update progress bar every 50 files
+            if (-not $Silent -and $fileCount % 50 -eq 0 -and $totalFiles -gt 0) {
+                $percent = [math]::Floor(($fileCount / $totalFiles) * 100)
+                $bar = ('█' * [math]::Floor($percent / 2)).PadRight(50, '░')
+                $elapsed = [math]::Floor($stopwatch.Elapsed.TotalSeconds)
+                $eta = ''
+                if ($fileCount -gt 0 -and $elapsed -gt 2) {
+                    $rate = $fileCount / $elapsed
+                    if ($rate -gt 0) {
+                        $remaining = [math]::Ceiling(($totalFiles - $fileCount) / $rate)
+                        if ($remaining -gt 0 -and $remaining -lt 60) {
+                            $eta = " ~${remaining}s"
+                        } elseif ($remaining -ge 60 -and $remaining -lt 3600) {
+                            $eta = " ~$([math]::Floor($remaining / 60))m$($remaining % 60)s"
+                        }
+                    }
+                }
+                $progressLine = "  [$bar] ${percent}%  ${fileCount}/${totalFiles}${eta}"
+                Write-Host "`r$($progressLine.PadRight(80))" -NoNewline -ForegroundColor Gray
+            }
+        }
+
+        $zip.Dispose()
+        $zipStream.Dispose()
+
+        $stopwatch.Stop()
+        $elapsed = [math]::Round($stopwatch.Elapsed.TotalSeconds, 1)
+
+        if (-not $Silent) {
+            $finalBar = "  [$(('█' * 50))] 100%  ${fileCount}/${totalFiles}  ${elapsed}s"
+            Write-Host "`r$($finalBar.PadRight(80))" -ForegroundColor Gray
+        }
+
+        # ── Summary ───────────────────────────────────────────────────────────
+        $zipSizeBytes = (Get-Item -LiteralPath $backupPath).Length
+        $sizeLabel = if ($zipSizeBytes -ge 1GB) { "$([math]::Round($zipSizeBytes / 1GB, 1)) GB" }
+                     elseif ($zipSizeBytes -ge 1MB) { "$([math]::Round($zipSizeBytes / 1MB, 0)) MB" }
+                     else { "$([math]::Round($zipSizeBytes / 1KB, 0)) KB" }
+
+        Write-Success "Backup complete: $backupZipName"
+        Write-Info "  Size: $sizeLabel | Files: $fileCount | Time: ${elapsed}s"
+        if ($actualInternalExcludes.Count -gt 0) {
+            Write-Info "  Excluded: $($actualInternalExcludes -join ', ')"
+        }
+        Write-Log "[BACKUP] Created: $backupPath ($sizeLabel, $fileCount files, ${elapsed}s)"
+
+        # Quick sanity check
+        if ($fileCount -lt 10) {
+            Write-Warn "Backup appears incomplete ($fileCount files). Check the log for errors."
+            Write-Log "[BACKUP] WARNING: Only $fileCount files in backup"
+        }
+
+        # Prune old backups (keep BackupRetention, default 5)
+        $retention = [math]::Max(1, ($Config.BackupRetention ?? 5))
+        $oldBackups = Get-ChildItem -LiteralPath $backupDir -File -Filter "gtnh-full-${Target}-*.zip" |
             Sort-Object Name | Select-Object -SkipLast $retention
-        foreach ($old in $oldFull) {
-            try { Remove-Item -LiteralPath $old.FullName -Recurse -Force; Write-Log "[BACKUP] Pruned: $($old.Name)" } catch {}
+        foreach ($old in $oldBackups) {
+            try { Remove-Item -LiteralPath $old.FullName -Force; Write-Log "[BACKUP] Pruned: $($old.Name)" } catch {}
+        }
+        # Also prune legacy folder-based backups from older versions
+        $oldFolders = Get-ChildItem -LiteralPath $backupDir -Directory -Filter "gtnh-full-${Target}-*" |
+            Sort-Object Name | Select-Object -SkipLast $retention
+        foreach ($old in $oldFolders) {
+            try { Remove-Item -LiteralPath $old.FullName -Recurse -Force; Write-Log "[BACKUP] Pruned legacy: $($old.Name)" } catch {}
         }
 
         return $true
     }
     catch {
-        Write-Err "Full backup failed: $($_.Exception.Message)"
+        Write-Err "Backup failed: $($_.Exception.Message)"
         Write-Log "[ERROR] Full backup failed: $($_.Exception.ToString())"
+        try { if ($zip) { $zip.Dispose() } } catch {}
+        try { if ($zipStream) { $zipStream.Dispose() } } catch {}
         if (Test-Path -LiteralPath $backupPath) {
-            try { Remove-Item -LiteralPath $backupPath -Recurse -Force } catch {}
+            try { Remove-Item -LiteralPath $backupPath -Force } catch {}
         }
         return $false
     }
@@ -282,10 +438,26 @@ function Invoke-BackupCleanup {
     $retention = $Config.BackupRetention ?? 5
     $pattern = "gtnh-full-${Target}-*"
 
-    $backups = Get-ChildItem -LiteralPath $backupDir -Directory -Filter $pattern | Sort-Object Name
+    # Clean zip backups
+    $zipBackups = Get-ChildItem -LiteralPath $backupDir -File -Filter "${pattern}.zip" -ErrorAction SilentlyContinue | Sort-Object Name
+    if ($zipBackups.Count -gt $retention) {
+        $toDelete = $zipBackups | Select-Object -First ($zipBackups.Count - $retention)
+        foreach ($old in $toDelete) {
+            try {
+                Remove-Item -LiteralPath $old.FullName -Force
+                Write-Info "  Cleaned old backup: $($old.Name)"
+                Write-Log "[BACKUP] Deleted old: $($old.FullName)"
+            }
+            catch {
+                Write-Warn "Could not delete old backup: $($old.Name)"
+            }
+        }
+    }
 
-    if ($backups.Count -gt $retention) {
-        $toDelete = $backups | Select-Object -First ($backups.Count - $retention)
+    # Clean legacy folder backups
+    $folderBackups = Get-ChildItem -LiteralPath $backupDir -Directory -Filter $pattern -ErrorAction SilentlyContinue | Sort-Object Name
+    if ($folderBackups.Count -gt $retention) {
+        $toDelete = $folderBackups | Select-Object -First ($folderBackups.Count - $retention)
         foreach ($old in $toDelete) {
             try {
                 Remove-Item -LiteralPath $old.FullName -Recurse -Force
@@ -321,7 +493,10 @@ function Invoke-BackupMenu {
 
         $backups = @()
         if (Test-Path -LiteralPath $backupDir) {
-            $backups = @(Get-ChildItem -LiteralPath $backupDir -Directory -Filter 'gtnh-*' | Sort-Object Name -Descending)
+            # Find both zip backups (new format) and folder backups (legacy)
+            $zipBackups = @(Get-ChildItem -LiteralPath $backupDir -File -Filter 'gtnh-full-*.zip' -ErrorAction SilentlyContinue)
+            $folderBackups = @(Get-ChildItem -LiteralPath $backupDir -Directory -Filter 'gtnh-full-*' -ErrorAction SilentlyContinue)
+            $backups = @($zipBackups + $folderBackups | Sort-Object Name -Descending)
         }
 
         if ($backups.Count -gt 0) {
@@ -331,22 +506,28 @@ function Invoke-BackupMenu {
             for ($i = 0; $i -lt $backups.Count; $i++) {
                 $backup = $backups[$i]
                 $tag = "[$($i + 1)]".PadLeft($tagWidth)
-                try {
-                    $sizeBytes = (Get-ChildItem -LiteralPath $backup.FullName -Recurse -File | Measure-Object -Property Length -Sum).Sum
-                    $sizeMB = [math]::Round($sizeBytes / 1MB, 1)
-                    Write-Host "    $tag $($backup.Name)  (${sizeMB} MB)" -ForegroundColor Cyan
+                $bName = $backup.Name -replace '\.zip$', ''
+                # Parse date and target from name (gtnh-full-<target>-yyyy-MM-dd_HHmmss)
+                $dateDisplay = ''
+                $targetDisplay = ''
+                if ($bName -match 'gtnh-full-(server|client)-(\d{4})-(\d{2})-(\d{2})_(\d{2})(\d{2})(\d{2})$') {
+                    $targetDisplay = $Matches[1]
+                    $dateDisplay = "$($Matches[3])/$($Matches[4])/$($Matches[2]) $($Matches[5]):$($Matches[6])"
                 }
-                catch {
-                    Write-Host "    $tag $($backup.Name)  (size unknown)" -ForegroundColor Cyan
-                }
+                $isZip = $backup.Name.EndsWith('.zip')
+                $formatLabel = if ($isZip) { 'zip' } else { 'folder' }
+                Write-Host "    $tag " -NoNewline -ForegroundColor White
+                Write-Host "$targetDisplay" -NoNewline -ForegroundColor $(if ($targetDisplay -eq 'server') { 'Green' } else { 'Cyan' })
+                Write-Host "  $dateDisplay" -NoNewline -ForegroundColor Gray
+                Write-Host "  ($formatLabel)" -ForegroundColor DarkGray
             }
         } else {
             Write-Info "No backups found."
         }
 
         Write-Host ""
-        Write-MenuOption -Key '1' -Description 'Create full instance backup'
-        Write-MenuOption -Key '2' -Description 'Restore a backup'
+        Write-MenuOption -Key '1' -Description 'Restore a backup'
+        Write-MenuOption -Key '2' -Description 'Delete a backup'
         Write-MenuOption -Key '3' -Description "Clean old backups (keep $($Config.BackupRetention ?? 5))"
         Write-MenuOption -Key 'O' -Description 'Open backup folder'
         Write-Host ""
@@ -356,30 +537,6 @@ function Invoke-BackupMenu {
 
         switch ($choice.ToUpper()) {
             '1' {
-                $hasServer = -not [string]::IsNullOrEmpty($Config.ServerPath)
-                $hasClient = -not [string]::IsNullOrEmpty($Config.ClientInstancePath)
-                if (-not $hasServer -and -not $hasClient) {
-                    Write-Warn "No instance paths configured."; Wait-ForKey; continue
-                }
-                if ($hasServer -and $hasClient) {
-                    Write-MenuOption "1" "Server"
-                    Write-MenuOption "2" "Client"
-                    Write-MenuOption "3" "Both"
-                    $tChoice = Read-MenuChoice "Target"
-                    $doServer = $tChoice -eq '1' -or $tChoice -eq '3'
-                    $doClient = $tChoice -eq '2' -or $tChoice -eq '3'
-                } else {
-                    $doServer = $hasServer; $doClient = $hasClient
-                }
-                if ($doServer) {
-                    Invoke-FullInstanceBackup -Config $Config -InstancePath $Config.ServerPath -Target 'server'
-                }
-                if ($doClient) {
-                    Invoke-FullInstanceBackup -Config $Config -InstancePath $Config.ClientInstancePath -Target 'client'
-                }
-                Wait-ForKey
-            }
-            '2' {
                 if ($backups.Count -eq 0) {
                     Write-Warn "No backups to restore."
                     Wait-ForKey
@@ -403,18 +560,150 @@ function Invoke-BackupMenu {
                         continue
                     }
 
-                    Write-Host ""
-                    Write-Warn "This will REPLACE the following in your $targetLabel instance:"
-                    $backupContents = Get-ChildItem -LiteralPath $selectedBackup.FullName
-                    foreach ($item in $backupContents) {
-                        Write-Info "  - $($item.Name)"
+                    $isZipBackup = $selectedBackup.Name.EndsWith('.zip')
+
+                    # Determine restore target
+                    $restorePath = $null
+                    if ($isServer) {
+                        if ($isZipBackup) {
+                            # Zip backups always contain server folder contents
+                            $restorePath = $instancePath
+                        } else {
+                            # Legacy folder: check if it has mods/ directly (new format) or not (old parent format)
+                            $backupHasModsDirectly = Test-Path -LiteralPath (Join-Path $selectedBackup.FullName 'mods')
+                            $restorePath = if ($backupHasModsDirectly) { $instancePath } else { Split-Path -Parent $instancePath }
+                        }
+                    } else {
+                        $restorePath = Split-Path -Parent $instancePath
                     }
+
+                    Write-Host ""
+                    Write-Warn "This will REPLACE files in your $targetLabel instance at:"
+                    Write-Info "  $restorePath"
                     Write-Host ""
 
-                    if (Confirm-Action "Restore this backup to $instancePath?") {
-                        Invoke-RestoreBackup -BackupPath $selectedBackup.FullName -InstancePath $instancePath
+                    if (Confirm-Action "Restore this backup?") {
+                        if ($isZipBackup) {
+                            # Extract zip to restore path (overwrites existing files)
+                            Write-Step "Extracting backup..."
+                            $zip = $null
+                            try {
+                                Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+                                $zip = [System.IO.Compression.ZipFile]::OpenRead($selectedBackup.FullName)
+                                $entryCount = 0
+                                $totalEntries = @($zip.Entries | Where-Object { -not [string]::IsNullOrEmpty($_.Name) }).Count
+                                foreach ($entry in $zip.Entries) {
+                                    if ([string]::IsNullOrEmpty($entry.Name)) { continue }  # Skip directory entries
+                                    $destFile = Join-Path $restorePath $entry.FullName
+                                    $destDir = Split-Path -Parent $destFile
+                                    if (-not (Test-Path -LiteralPath $destDir)) {
+                                        New-Item -Path $destDir -ItemType Directory -Force | Out-Null
+                                    }
+                                    $entryStream = $entry.Open()
+                                    try {
+                                        $fileStream = [System.IO.File]::Create($destFile)
+                                        try {
+                                            $entryStream.CopyTo($fileStream)
+                                        } finally {
+                                            $fileStream.Dispose()
+                                        }
+                                    } finally {
+                                        $entryStream.Dispose()
+                                    }
+                                    $entryCount++
+                                    if ($entryCount % 200 -eq 0 -and $totalEntries -gt 0) {
+                                        $pct = [math]::Floor(($entryCount / $totalEntries) * 100)
+                                        $bar = ('█' * [math]::Floor($pct / 2)).PadRight(50, '░')
+                                        $progressLine = "  [$bar] ${pct}%  ${entryCount}/${totalEntries}"
+                                        Write-Host "`r$($progressLine.PadRight(80))" -NoNewline -ForegroundColor Gray
+                                    }
+                                }
+                                if ($totalEntries -gt 200) {
+                                    $finalLine = "  [$(('█' * 50))] 100%  ${entryCount}/${totalEntries}"
+                                    Write-Host "`r$($finalLine.PadRight(80))" -ForegroundColor Gray
+                                }
+                                Write-Success "Restore complete ($entryCount files extracted)."
+                                
+                                # Detect stale files in mods/ that weren't in the backup
+                                $modsDir = Join-Path $restorePath 'mods'
+                                if (-not (Test-Path -LiteralPath $modsDir)) {
+                                    $modsDir = Join-Path $restorePath '.minecraft' 'mods'
+                                }
+                                if (Test-Path -LiteralPath $modsDir) {
+                                    $backupModEntries = @{}
+                                    foreach ($e in $zip.Entries) {
+                                        if ($e.FullName -match '^(?:\.minecraft/)?mods/([^/]+\.jar)$') {
+                                            $backupModEntries[$Matches[1].ToLower()] = $true
+                                        }
+                                    }
+                                    if ($backupModEntries.Count -gt 0) {
+                                        $staleJars = @(Get-ChildItem -LiteralPath $modsDir -Filter '*.jar' -File -ErrorAction SilentlyContinue |
+                                            Where-Object { -not $backupModEntries.ContainsKey($_.Name.ToLower()) })
+                                        if ($staleJars.Count -gt 0) {
+                                            Write-Host ""
+                                            Write-Warn "$($staleJars.Count) mod(s) in mods/ were not in this backup (added after it was taken):"
+                                            foreach ($stale in ($staleJars | Sort-Object Name | Select-Object -First 10)) {
+                                                Write-Host "    - $($stale.Name)" -ForegroundColor DarkYellow
+                                            }
+                                            if ($staleJars.Count -gt 10) {
+                                                Write-Host "    ... and $($staleJars.Count - 10) more" -ForegroundColor DarkGray
+                                            }
+                                            Write-Host ""
+                                            if (Confirm-Action "Remove these $($staleJars.Count) stale mod(s)?") {
+                                                foreach ($stale in $staleJars) {
+                                                    try { Remove-Item -LiteralPath $stale.FullName -Force } catch {}
+                                                }
+                                                Write-Success "Removed $($staleJars.Count) stale mod(s)."
+                                                Write-Log "[BACKUP] Removed $($staleJars.Count) stale mods after restore"
+                                            }
+                                        }
+                                    }
+                                }
+
+                                Write-Log "[BACKUP] Restored zip: $($selectedBackup.Name) to $restorePath ($entryCount files)"
+                            } catch {
+                                Write-Err "Restore failed: $($_.Exception.Message)"
+                                Write-Log "[ERROR] Zip restore failed: $($_.Exception.ToString())"
+                            } finally {
+                                if ($zip) { try { $zip.Dispose() } catch {} }
+                            }
+                        } else {
+                            # Legacy folder restore
+                            Invoke-RestoreBackup -BackupPath $selectedBackup.FullName -InstancePath $restorePath
+                        }
                     } else {
                         Write-Info "Restore cancelled."
+                    }
+                } else {
+                    Write-Warn "Invalid selection."
+                }
+                Wait-ForKey
+            }
+            '2' {
+                if ($backups.Count -eq 0) {
+                    Write-Warn "No backups to delete."
+                    Wait-ForKey
+                    continue
+                }
+
+                Write-Host ""
+                $pickNum = Read-UserInput "Enter backup number to delete"
+                $pickIdx = 0
+                if ([int]::TryParse($pickNum, [ref]$pickIdx) -and $pickIdx -ge 1 -and $pickIdx -le $backups.Count) {
+                    $selectedBackup = $backups[$pickIdx - 1]
+                    Write-Host ""
+                    if (Confirm-Action "Delete $($selectedBackup.Name)?") {
+                        try {
+                            if ($selectedBackup.PSIsContainer) {
+                                Remove-Item -LiteralPath $selectedBackup.FullName -Recurse -Force
+                            } else {
+                                Remove-Item -LiteralPath $selectedBackup.FullName -Force
+                            }
+                            Write-Success "Deleted: $($selectedBackup.Name)"
+                            Write-Log "[BACKUP] User deleted: $($selectedBackup.Name)"
+                        } catch {
+                            Write-Err "Could not delete: $($_.Exception.Message)"
+                        }
                     }
                 } else {
                     Write-Warn "Invalid selection."
@@ -452,7 +741,8 @@ function Save-RollbackSnapshot {
         Using Move-Item is instant on the same drive (just a directory rename) vs
         Copy-Item which duplicates every byte. The rollback dir is placed next to the
         instance to maximize the chance of being on the same filesystem.
-        On failure, folders are moved back. On success, the rollback dir is deleted.
+        The snapshot persists until the next update overwrites it, allowing the user
+        to rollback even after a successful update if the game crashes on launch.
     .PARAMETER InstancePath
         The root path of the instance.
     .PARAMETER Target

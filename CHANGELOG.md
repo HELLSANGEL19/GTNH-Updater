@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.4.6-beta] - 2026-05-21
+
+### Added
+
+* Backups now stored as compressed .zip files — significantly smaller on disk than raw folder copies
+* Rollback snapshots now persist until the next update — allows rollback even if the game crashes after a successful update
+* "Rollback last update" option in Settings > Backups and Cache — restores mods/config/scripts to pre-update state
+* Backup progress bar with ETA matching the style used for mod downloads
+* Backup integrity verification (warns if backup appears incomplete)
+* Internal directories (logs, crash-reports, cache, .temp, backups) always excluded from backups
+* Already-compressed files (.jar, .zip, .png, .ogg, etc.) stored without re-compression for speed
+* Delete individual backups from the Manage Backups menu
+
+### Fixed
+
+* Server backups now only back up the server folder itself, not the entire parent directory (previously could back up 100 unrelated server folders if they shared a parent)
+* Backup no longer fails on the `.gtnh-updater.lock` file (held open by the running process)
+* Backup excludes rollback snapshot directories and the updater's own folder when inside the backup source
+* Fixed `-or` parsing error in backup safety check that crashed when source had >10 subdirectories
+* Restoring old-format server backups (created before 0.4.6) is detected automatically and handled correctly
+
 ## [0.4.5-beta] - 2026-05-19
 
 ### Added
