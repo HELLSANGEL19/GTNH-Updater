@@ -28,9 +28,9 @@ function Add-UpdateHistoryEntry {
     #>
     param(
         [Parameter(Mandatory)][PSCustomObject]$Config,
-        [Parameter(Mandatory)][string]$Version,
-        [Parameter(Mandatory)][string]$Channel,
-        [Parameter(Mandatory)][string]$Target,
+        [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$Version,
+        [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$Channel,
+        [Parameter(Mandatory)][ValidateSet('server', 'client')][string]$Target,
         [string]$Details = ''
     )
 

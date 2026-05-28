@@ -160,7 +160,7 @@ Every file or folder the script creates must have a cleanup path:
 |---|---|---|
 | `logs/*.log` | 20 most recent | Pruned on startup |
 | `cache/*` | 5 most recent | Pruned on startup |
-| `backups/gtnh-backup-*` | Configurable (default 5) | Pruned after each backup |
+| `backups/gtnh-full-*` | Configurable (default 5) | Pruned after each backup |
 | `.temp/*` | Single run | Cleaned in finally blocks + startup cleanup |
 | `staging-*/` | Single run | Cleaned on success, startup cleanup removes stale |
 | `.nightly-updater/*` | Legacy (deprecated) | Old Caedis binary; cleaned on startup if present |

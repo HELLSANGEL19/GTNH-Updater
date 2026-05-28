@@ -156,6 +156,10 @@ function Invoke-ConfigPatches {
         The root path of the instance.
     .PARAMETER Target
         The target type: 'server' or 'client'.
+    .OUTPUTS
+        PSCustomObject with Applied (int) and MissingFiles (int) counts.
+        MissingFiles indicates patches that were skipped because the config file
+        doesn't exist yet (e.g., generated on first launch).
     #>
     param(
         [Parameter(Mandatory)][PSCustomObject]$Config,
@@ -163,13 +167,15 @@ function Invoke-ConfigPatches {
         [Parameter(Mandatory)][ValidateSet('server', 'client')][string]$Target
     )
 
+    $result = [PSCustomObject]@{ Applied = 0; MissingFiles = 0 }
+
     $patches = $Config.ConfigPatches | Where-Object {
         $_.Target -eq $Target -or $_.Target -eq 'both'
     }
 
     if (-not $patches -or @($patches).Count -eq 0) {
         Write-Info "No config patches configured for $Target."
-        return
+        return $result
     }
 
     $patchList = @($patches)
@@ -177,6 +183,7 @@ function Invoke-ConfigPatches {
     # ── Pre-flight validation ─────────────────────────────────────────────────
     $validPatches = @()
     $issues = @()
+    $missingFilePatches = @()
 
     foreach ($patch in $patchList) {
         $normalizedPath = $patch.FilePath -replace '[/\\]', [IO.Path]::DirectorySeparatorChar.ToString()
@@ -184,6 +191,7 @@ function Invoke-ConfigPatches {
         $desc = $patch.Description ? " ($($patch.Description))" : ''
 
         if (-not (Test-Path -LiteralPath $fullPath)) {
+            $missingFilePatches += $patch
             $issues += [PSCustomObject]@{
                 Patch   = $patch
                 Problem = "File not found: $($patch.FilePath)"
@@ -230,8 +238,10 @@ function Invoke-ConfigPatches {
 
         # Auto-remove broken patches that were auto-detected (not manually created)
         # Auto-detected patches have Source = 'auto'
+        # Exclude missing-file patches — those files may be generated on first launch
         $autoDetectedBroken = @($issues | Where-Object {
-            $_.Patch.Source -eq 'auto' -or (-not $_.Patch.Description -and -not $_.Patch.Source)
+            ($_.Patch.Source -eq 'auto' -or (-not $_.Patch.Description -and -not $_.Patch.Source)) -and
+            $_.Patch -notin $missingFilePatches
         })
         if ($autoDetectedBroken.Count -gt 0) {
             Write-Host ""
@@ -270,16 +280,19 @@ function Invoke-ConfigPatches {
             Write-Info "$($validPatches.Count) valid patch(es) will still be applied."
         } else {
             Write-Warn "No valid patches to apply."
-            return
+            $result.MissingFiles = $missingFilePatches.Count
+            return $result
         }
     }
 
     # ── Apply valid patches ───────────────────────────────────────────────────
     if ($validPatches.Count -eq 0) {
-        return
+        $result.MissingFiles = $missingFilePatches.Count
+        return $result
     }
 
-    Write-Info "Applying $($validPatches.Count) patch(es)..."
+    $patchSuccess = 0
+    $patchFailed = 0
 
     foreach ($patch in $validPatches) {
         $patchParams = @{
@@ -291,16 +304,27 @@ function Invoke-ConfigPatches {
         if ($patch.Section) {
             $patchParams['Section'] = $patch.Section
         }
-        $result = Set-ConfigValue @patchParams
-        $desc = $patch.Description ? " ($($patch.Description))" : ''
-        if ($result) {
-            Write-Info "  Patched: $($patch.FilePath) -> $($patch.Key)=$($patch.Value)$desc"
+        $patchOk = Set-ConfigValue @patchParams
+        if ($patchOk) {
+            $patchSuccess++
             Write-Log "[PATCH] Applied: $($patch.FilePath) | $($patch.Key)=$($patch.Value)"
         } else {
-            Write-Warn "  Failed: $($patch.FilePath) -> $($patch.Key)$desc"
+            $patchFailed++
+            $desc = $patch.Description ? " ($($patch.Description))" : ''
+            Write-Warn "  Patch failed: $($patch.FilePath) -> $($patch.Key)$desc"
             Write-Log "[PATCH] Failed: $($patch.FilePath) | $($patch.Key)"
         }
     }
+
+    if ($patchFailed -eq 0) {
+        Write-Success "Applied $patchSuccess config patch(es)."
+    } else {
+        Write-Info "Applied $patchSuccess patch(es), $patchFailed failed."
+    }
+
+    $result.Applied = $patchSuccess
+    $result.MissingFiles = $missingFilePatches.Count
+    return $result
 }
 
 function Test-ConfigPatches {
@@ -679,25 +703,71 @@ function Invoke-ConfigPatchMenu {
         }
 
         Write-Host ""
+        # Add patches
         Write-MenuOption -Key 'B' -Description 'Browse config files and pick a key'
-        Write-MenuOption -Key 'A' -Description 'Add a patch manually'
-        Write-MenuOption -Key 'E' -Description 'Add from common patches'
+        Write-MenuOption -Key 'E' -Description 'Common patches (templates)'
+        Write-MenuOption -Key 'A' -Description 'Add manually'
+        Write-MenuOption -Key 'I' -Description 'Import from file'
         if ($Config.ConfigPatches.Count -gt 0) {
+            Write-Host ""
+            # Manage existing
             Write-MenuOption -Key 'F' -Description 'Edit a patch'
             Write-MenuOption -Key 'D' -Description 'Delete a patch'
-            Write-MenuOption -Key 'T' -Description 'Test patches (read-only preview)'
-            Write-MenuOption -Key 'X' -Description 'Export patches to file'
+            Write-MenuOption -Key 'C' -Description 'Clear all'
+            Write-Host ""
+            # Actions
+            Write-MenuOption -Key 'Y' -Description 'Apply now'
+            Write-MenuOption -Key 'T' -Description 'Test (preview without applying)'
+            Write-MenuOption -Key 'X' -Description 'Export to file'
         }
-        Write-MenuOption -Key 'I' -Description 'Import patches from file'
-        Write-MenuOption -Key 'G' -Description 'Re-scan for config changes (compare your instance against the pack defaults)'
-        if ($Config.ConfigPatches.Count -gt 0) {
-            Write-MenuOption -Key 'C' -Description 'Clear all patches'
-        }
-        Write-MenuOption -Key 'R' -Description 'Return to previous menu'
+        Write-MenuOption -Key 'G' -Description 'Re-scan for config changes'
+        Write-Host ""
+        Write-MenuOption -Key 'R' -Description 'Return'
 
         $choice = Read-MenuChoice -Prompt 'Choose an option'
 
         switch ($choice.ToUpper()) {
+            'Y' {
+                # Apply patches now (standalone, for post-first-launch configs)
+                if ($Config.ConfigPatches.Count -eq 0) {
+                    Write-Warn "No patches configured."
+                    Wait-ForKey
+                    continue
+                }
+
+                # Determine target(s)
+                $hasServer = -not [string]::IsNullOrEmpty($Config.ServerPath)
+                $hasClient = -not [string]::IsNullOrEmpty($Config.ClientInstancePath)
+
+                if ($hasServer -and $hasClient) {
+                    Write-Info "Apply patches to: [1] Server, [2] Client, [3] Both"
+                    $applyTarget = Read-MenuChoice "Target"
+                    $applyTargets = switch ($applyTarget) {
+                        '1' { @('server') }
+                        '2' { @('client') }
+                        default { @('server', 'client') }
+                    }
+                } elseif ($hasServer) {
+                    $applyTargets = @('server')
+                } elseif ($hasClient) {
+                    $applyTargets = @('client')
+                } else {
+                    Write-Warn "No instance paths configured."
+                    Wait-ForKey
+                    continue
+                }
+
+                foreach ($applyTgt in $applyTargets) {
+                    $applyPath = $applyTgt -eq 'server' ? $Config.ServerPath : $Config.ClientInstancePath
+                    if ([string]::IsNullOrEmpty($applyPath) -or -not (Test-Path -LiteralPath $applyPath)) {
+                        Write-Warn "No valid $applyTgt path configured. Skipping."
+                        continue
+                    }
+                    Write-Header "Applying patches ($applyTgt)"
+                    Invoke-ConfigPatches -Config $Config -InstancePath $applyPath -Target $applyTgt
+                }
+                Wait-ForKey
+            }
             'B' {
                 # Browse config files interactively
                 Write-Info "Browse which instance? [1] Server, [2] Client"
@@ -829,12 +899,28 @@ function Invoke-ConfigPatchMenu {
                         Description = 'Prevent all GregTech machines from exploding under any condition'
                     }
                     [PSCustomObject]@{
-                        Name        = 'Disable GT rain/thunder explosions'
+                        Name        = 'Disable GT rain explosions'
                         FilePath    = 'config/GregTech/GregTech.cfg'
                         Key         = 'B:machineRainExplosions'
                         Section     = 'machines'
                         Value       = 'false'
-                        Description = 'Machines will not explode when exposed to rain (also set machineThunderExplosions for thunder)'
+                        Description = 'Machines will not explode when exposed to rain'
+                    }
+                    [PSCustomObject]@{
+                        Name        = 'Disable GT thunder explosions'
+                        FilePath    = 'config/GregTech/GregTech.cfg'
+                        Key         = 'B:machineThunderExplosions'
+                        Section     = 'machines'
+                        Value       = 'false'
+                        Description = 'Machines will not explode during thunderstorms'
+                    }
+                    [PSCustomObject]@{
+                        Name        = 'Disable GT fire explosions'
+                        FilePath    = 'config/GregTech/GregTech.cfg'
+                        Key         = 'B:machineFireExplosions'
+                        Section     = 'machines'
+                        Value       = 'false'
+                        Description = 'Machines will not explode when adjacent to fire'
                     }
                     [PSCustomObject]@{
                         Name        = 'Disable GT wrench explosions'
@@ -869,12 +955,11 @@ function Invoke-ConfigPatchMenu {
                         Description = 'Prevent special creeper variants (gravel, doom, splitting, etc.) from spawning'
                     }
                     [PSCustomObject]@{
-                        Name        = 'Morpheus sleep percentage'
-                        FilePath    = 'config/Morpheus.cfg'
-                        Key         = 'I:SleeperPerc'
-                        Section     = 'settings'
+                        Name        = 'Set sleep percentage to skip night (ServerUtilities)'
+                        FilePath    = 'serverutilities/serverutilities.cfg'
+                        Key         = 'I:player_sleeping_percentage'
                         Value       = '50'
-                        Description = 'Percentage of online players that must sleep to skip night (server only, default 50)'
+                        Description = 'Percentage of players that must sleep to skip night (server only, default 33)'
                     }
                     [PSCustomObject]@{
                         Name        = 'Disable warp environmental effects'
@@ -889,6 +974,79 @@ function Invoke-ConfigPatchMenu {
                         Key         = 'B:borderless'
                         Value       = 'true'
                         Description = 'Replaces exclusive fullscreen with borderless windowed (requires Java 17+ pack, not Java 8)'
+                    }
+                    [PSCustomObject]@{
+                        Name        = 'Disable warp mechanics (Thaumcraft)'
+                        FilePath    = 'config/Thaumcraft.cfg'
+                        Key         = 'B:wuss_mode'
+                        Value       = 'true'
+                        Description = 'Disables warp and all related mechanics entirely'
+                    }
+                    [PSCustomObject]@{
+                        Name        = 'Disable taint biome spreading (Thaumcraft)'
+                        FilePath    = 'config/Thaumcraft.cfg'
+                        Key         = 'I:biome_taint_spread'
+                        Value       = '0'
+                        Description = 'Prevents taint biomes from spreading (0 = disabled)'
+                    }
+                    [PSCustomObject]@{
+                        Name        = 'Disable taint from flux (Thaumcraft)'
+                        FilePath    = 'config/Thaumcraft.cfg'
+                        Key         = 'B:biome_taint_from_flux'
+                        Value       = 'false'
+                        Description = 'Prevents flux effects from causing taint biomes'
+                    }
+                    [PSCustomObject]@{
+                        Name        = 'Lock BetterQuesting tray on open'
+                        FilePath    = 'config/betterquesting.cfg'
+                        Key         = 'B:"Lock tray"'
+                        Section     = 'general'
+                        Value       = 'true'
+                        Description = 'Quest chapter list will be locked and opened by default (client)'
+                    }
+                    [PSCustomObject]@{
+                        Name        = 'Disable BetterQuesting quest notices'
+                        FilePath    = 'config/betterquesting.cfg'
+                        Key         = 'B:"Quest Notices"'
+                        Section     = 'general'
+                        Value       = 'false'
+                        Description = 'Disables popup notifications when quests are completed or updated (client)'
+                    }
+                    [PSCustomObject]@{
+                        Name        = 'Unrestrict BetterQuesting admin commands'
+                        FilePath    = 'config/betterquesting.cfg'
+                        Key         = 'B:"Unrestrict Admin Commands"'
+                        Section     = 'general'
+                        Value       = 'true'
+                        Description = 'Allows all users to use /bq_admin commands without op status (useful for singleplayer without cheats)'
+                    }
+                    [PSCustomObject]@{
+                        Name        = 'Disable Blood Moon (RandomThings)'
+                        FilePath    = 'config/RandomThings.cfg'
+                        Key         = 'D:BloodMoonChance'
+                        Value       = '0.0'
+                        Description = 'Set blood moon chance to 0 — disables blood moons entirely'
+                    }
+                    [PSCustomObject]@{
+                        Name        = 'Disable HungerOverhaul difficulty scaling'
+                        FilePath    = 'config/HungerOverhaul/HungerOverhaul.cfg'
+                        Key         = 'B:difficultyScaling'
+                        Value       = 'false'
+                        Description = 'Disables all difficulty-based hunger/healing/effects scaling'
+                    }
+                    [PSCustomObject]@{
+                        Name        = 'Disable SpiceOfLife food penalties'
+                        FilePath    = 'config/SpiceOfLife.cfg'
+                        Key         = 'B:food.modifier.enabled'
+                        Value       = 'false'
+                        Description = 'Disables diminishing returns on eating the same food repeatedly'
+                    }
+                    [PSCustomObject]@{
+                        Name        = 'Disable hard mode nodes (Thaumcraft)'
+                        FilePath    = 'config/Thaumcraft.cfg'
+                        Key         = 'B:hard_mode_nodes'
+                        Value       = 'false'
+                        Description = 'Dark/hungry/tainted nodes will not have extra nasty effects'
                     }
                 )
 

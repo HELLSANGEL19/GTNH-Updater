@@ -24,6 +24,28 @@
 # ── Channel Constants ─────────────────────────────────────────────────────────
 $script:ValidChannels = @('stable', 'daily', 'experimental')
 
+# ── Terminal Width Helper ─────────────────────────────────────────────────────
+# Safe cross-platform terminal width detection. Returns a usable width for
+# progress bars and line clearing. Falls back to 120 if console is unavailable
+# (non-interactive terminals, SSH pipes, systemd services on Linux).
+function Get-TerminalWidth {
+    try {
+        $width = [Console]::BufferWidth
+        if ($width -gt 0) {
+            return [math]::Min(($width - 1), 120)
+        }
+    } catch {}
+    # Fallback: try $Host.UI.RawUI (works in some PS hosts where Console doesn't)
+    try {
+        $width = $Host.UI.RawUI.BufferSize.Width
+        if ($width -gt 0) {
+            return [math]::Min(($width - 1), 120)
+        }
+    } catch {}
+    # Final fallback: safe default
+    return 80
+}
+
 function Write-Banner {
     <#
     .SYNOPSIS
@@ -483,4 +505,52 @@ function Remove-TempDir {
             $ProgressPreference = $oldProgress
         } catch {}
     }
+}
+
+function Write-Dots {
+    <#
+    .SYNOPSIS
+        Show a message with trailing "..." to indicate a brief operation is running.
+        Call this before the operation, then Write-Host "" or Write-Success after.
+    .PARAMETER Message
+        Text to show (e.g., "Fetching manifest").
+    #>
+    param([Parameter(Mandatory)][string]$Message)
+    Write-Host "  $Message..." -NoNewline -ForegroundColor Gray
+}
+
+function Complete-Dots {
+    <#
+    .SYNOPSIS
+        Complete a Write-Dots line with a result (overwrites the dots line).
+    .PARAMETER Result
+        Short result text (e.g., "done", "v2.8.5", "287 mods").
+    .PARAMETER Color
+        Color for the result text. Default: DarkGreen.
+    #>
+    param(
+        [string]$Result = 'done',
+        [string]$Color = 'DarkGreen'
+    )
+    Write-Host " $Result" -ForegroundColor $Color
+}
+
+function Clear-ProgressLine {
+    <#
+    .SYNOPSIS
+        Clear the current console line (used after progress bars).
+    #>
+    Write-Host "`r$(' ' * (Get-TerminalWidth))`r" -NoNewline
+}
+
+function Write-Phase {
+    <#
+    .SYNOPSIS
+        Display a thin phase separator for update flow sections.
+    .PARAMETER Name
+        Short phase name (e.g., "Mods", "Config", "Finalize").
+    #>
+    param([Parameter(Mandatory)][string]$Name)
+    Write-Host ""
+    Write-Host "  ── $Name $('─' * [math]::Max(1, 48 - $Name.Length))" -ForegroundColor DarkGray
 }

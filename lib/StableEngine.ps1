@@ -79,17 +79,18 @@ function Invoke-StableUpdate {
     Write-Header "$($ChannelLabel.Substring(0,1).ToUpper() + $ChannelLabel.Substring(1)) Update - $($Target.ToUpper())"
 
     # ── Step 1: Query latest version ──────────────────────────────────────────
-    Write-Step "Checking for latest $ChannelLabel release..."
 
     if ($Release) {
         $release = $Release
     }
     else {
+        Write-Dots "Checking for latest $ChannelLabel release"
         $release = Get-LatestStableRelease -PackType ($Config.JavaVersion ?? 'java17')
         if (-not $release) {
-            Write-Info "Primary API failed, trying fallback..."
+            Complete-Dots "retrying" -Color DarkYellow
             $release = Get-LatestStableReleaseFallback -PackType ($Config.JavaVersion ?? 'java17')
         }
+        if ($release) { Complete-Dots "ok" }
     }
 
     if (-not $release) {
@@ -99,10 +100,8 @@ function Invoke-StableUpdate {
     }
 
     $latestVersion = $release.Version
-    Write-Info "Latest $ChannelLabel version: $latestVersion"
 
     # ── Step 2: Compare with installed version ────────────────────────────────
-    Write-Step "Comparing versions..."
 
     $installedVersion = $Target -eq 'server' ? $Config.InstalledServerVersion : $Config.InstalledClientVersion
 
@@ -239,7 +238,7 @@ function Invoke-StableUpdate {
     }
 
     # ── Step 3: Check cache / download zip ────────────────────────────────────
-    Write-Step "Preparing download..."
+    Write-Phase "Download"
 
     $zipUrl = $Target -eq 'server' ? $release.ServerZipUrl : $release.ClientZipUrl
     $zipName = $Target -eq 'server' ? $release.ServerZipName : $release.ClientZipName
@@ -331,26 +330,28 @@ function Invoke-StableUpdate {
     }
 
     # ── Step 4: Extract to staging folder ─────────────────────────────────────
-    Write-Step "Extracting to staging folder..."
 
     $stagingDir = Join-Path $script:ScriptDir "staging-${Target}-${latestVersion}"
 
     if (Test-Path -LiteralPath $stagingDir) {
-        Write-Info "Staging folder already exists: staging-${Target}-${latestVersion}"
-        Write-Info "Using existing extraction."
+        Write-Info "Using cached staging folder."
     } else {
+        Write-Dots "Extracting pack"
         try {
             Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
             New-Item -Path $stagingDir -ItemType Directory -Force | Out-Null
             [System.IO.Compression.ZipFile]::ExtractToDirectory($zipPath, $stagingDir, $true)
-            Write-Success "Extracted to: staging-${Target}-${latestVersion}/"
+            Complete-Dots "ok"
         }
         catch {
+            Complete-Dots "failed" -Color Red
             Write-Err "Extraction failed: $($_.Exception.Message)"
             Write-Info "If this keeps happening, try clearing the download cache in Settings."
             Write-Log "[ERROR] Staging extraction failed: $($_.Exception.ToString())"
             if (Test-Path -LiteralPath $stagingDir) {
+                $oldProgress = $ProgressPreference; $ProgressPreference = 'SilentlyContinue'
                 Remove-Item -LiteralPath $stagingDir -Recurse -Force
+                $ProgressPreference = $oldProgress
             }
             # Remove potentially corrupted file from cache and temp
             $cachedCorrupt = Join-Path $script:CacheDir $zipName
@@ -386,7 +387,7 @@ function Invoke-StableUpdate {
     }
 
     # ── Step 5: Find mods in staging ──────────────────────────────────────────
-    Write-Step "Analyzing mod changes..."
+    Write-Phase "Mod Changes"
 
     $stagingModsPath = $null
     $searchRoot = $stagingDir
@@ -406,7 +407,7 @@ function Invoke-StableUpdate {
     }
 
     if ($stagingModsPath) {
-        Write-Info "Found new pack mods at: $($stagingModsPath.Replace($stagingDir, 'staging/'))"
+        Write-Log "[STABLE] Found mods at: $stagingModsPath"
     }
 
     $newJars = @()
@@ -427,16 +428,32 @@ function Invoke-StableUpdate {
     Write-Info "Current: $($currentJars.Count) mods | New pack: $($newJars.Count) mods"
 
     # Build base name maps for comparison
+    # If multiple JARs normalize to the same base name, keep the longer filename
+    # (more likely to be the versioned/correct one) and log the collision
     $currentBaseMap = @{}
     foreach ($jar in $currentJars) {
         $base = Get-ModBaseName -FileName $jar.Name
-        $currentBaseMap[$base] = $jar.Name
+        if ($currentBaseMap.ContainsKey($base)) {
+            Write-Log "[STABLE] Base name collision in current mods: '$($jar.Name)' and '$($currentBaseMap[$base])' both normalize to '$base'"
+            if ($jar.Name.Length -gt $currentBaseMap[$base].Length) {
+                $currentBaseMap[$base] = $jar.Name
+            }
+        } else {
+            $currentBaseMap[$base] = $jar.Name
+        }
     }
 
     $newBaseMap = @{}
     foreach ($jar in $newJars) {
         $base = Get-ModBaseName -FileName $jar.Name
-        $newBaseMap[$base] = $jar.Name
+        if ($newBaseMap.ContainsKey($base)) {
+            Write-Log "[STABLE] Base name collision in new pack: '$($jar.Name)' and '$($newBaseMap[$base])' both normalize to '$base'"
+            if ($jar.Name.Length -gt $newBaseMap[$base].Length) {
+                $newBaseMap[$base] = $jar.Name
+            }
+        } else {
+            $newBaseMap[$base] = $jar.Name
+        }
     }
 
     # Get custom mods list from config
@@ -631,10 +648,7 @@ function Invoke-StableUpdate {
             Write-Host "$($oc.PackVersion)" -ForegroundColor Yellow
         }
         Write-Host ""
-        Write-Host "  Keep your versions? " -NoNewline -ForegroundColor White
-        Write-Host "[Y] Keep mine  [N] Use pack versions" -ForegroundColor DarkGray
-        $overrideChoice = (Read-Host).Trim()
-        $keepOverrides = $overrideChoice -notmatch '^[Nn]$'
+        $keepOverrides = Confirm-Action "Keep your override versions?" -DefaultYes
         if ($keepOverrides) {
             Write-Info "  Your override versions will be restored after update."
         } else {
@@ -807,21 +821,23 @@ function Invoke-StableUpdate {
     # ── APPLY UPDATE ──────────────────────────────────────────────────────────
     Write-Header "Applying Update"
 
-    $totalSteps = 9
     $customModsToRestore = $savedCustomMods
 
     # ── Backup custom mods to temp ────────────────────────────────────────────
-    Write-Step "Step 1/$totalSteps`: Backing up custom mods..."
 
     $customModTempDir = Join-Path $tempDir 'custom-mods'
     if (Test-Path -LiteralPath $customModTempDir) {
+        $oldProgress = $ProgressPreference; $ProgressPreference = 'SilentlyContinue'
         Remove-Item -LiteralPath $customModTempDir -Recurse -Force
+        $ProgressPreference = $oldProgress
     }
 
     # Also back up override mods to temp (they'll be deleted with mods/ folder)
     $overrideModTempDir = Join-Path $tempDir 'override-mods'
     if (Test-Path -LiteralPath $overrideModTempDir) {
+        $oldProgress = $ProgressPreference; $ProgressPreference = 'SilentlyContinue'
         Remove-Item -LiteralPath $overrideModTempDir -Recurse -Force
+        $ProgressPreference = $oldProgress
     }
     if ($keepOverrides -and $overrideConflicts.Count -gt 0 -and (Test-Path -LiteralPath $currentModsPath)) {
         New-Item -Path $overrideModTempDir -ItemType Directory -Force | Out-Null
@@ -932,11 +948,12 @@ function Invoke-StableUpdate {
     }
 
     # ── Preserve files ────────────────────────────────────────────────────────
-    Write-Step "Step 2/$totalSteps`: Preserving critical files..."
 
     $preserveTempDir = Join-Path $tempDir 'preserved'
     if (Test-Path -LiteralPath $preserveTempDir) {
+        $oldProgress = $ProgressPreference; $ProgressPreference = 'SilentlyContinue'
         Remove-Item -LiteralPath $preserveTempDir -Recurse -Force
+        $ProgressPreference = $oldProgress
     }
 
     $preserveOk = Invoke-PreserveFiles -InstancePath $instancePath -Target $Target -TempDir $preserveTempDir
@@ -965,10 +982,8 @@ function Invoke-StableUpdate {
     # This is fast and small (just the folders being deleted), so always worth doing.
     $rollbackDir = Save-RollbackSnapshot -InstancePath $instancePath -Target $Target
     if (-not $rollbackDir) {
-        Write-Warn "Could not save rollback snapshot. If the update fails, you will need to restore manually."
         if (-not (Confirm-Action "Continue without rollback safety net?")) {
             Write-Info "Update cancelled."
-            # Clean up temp dirs
             Remove-TempDir $customModTempDir
             Remove-TempDir $preserveTempDir
             return
@@ -982,30 +997,28 @@ function Invoke-StableUpdate {
         # ── Delete folders ────────────────────────────────────────────────────
         # Note: Save-RollbackSnapshot already MOVED these folders out (for speed).
         # Invoke-DeleteFolders handles any stragglers (Java17 files, edge cases).
-        Write-Step "Step 3/$totalSteps`: Cleaning old pack files..."
+        Write-Phase "Install"
         $postDeletion = $true
 
         Invoke-DeleteFolders -InstancePath $instancePath -Target $Target -JavaVersion $javaVersion
 
         # ── Move staging to instance ──────────────────────────────────────────
-        Write-Step "Step 4/$totalSteps`: Installing new pack from staging..."
 
         Move-StagingToInstance -StagingDir $stagingDir -DestinationPath $instancePath -Target $Target -JavaVersion $javaVersion
 
         # ── Restore preserved files ───────────────────────────────────────────
-        Write-Step "Step 5/$totalSteps`: Restoring preserved files..."
+        Write-Phase "Finalize"
 
         Invoke-RestoreFiles -InstancePath $instancePath -Target $Target -TempDir $preserveTempDir
 
         # ── Restore custom mods ───────────────────────────────────────────────
-        Write-Step "Step 6/$totalSteps`: Restoring custom mods..."
 
+        $restoredCount = 0
         if ($customModsToRestore.Count -gt 0 -and (Test-Path -LiteralPath $customModTempDir)) {
             $modsDir = Join-Path $instancePath 'mods'
             if (-not (Test-Path -LiteralPath $modsDir)) {
                 New-Item -Path $modsDir -ItemType Directory -Force | Out-Null
             }
-            $restoredCount = 0
             foreach ($modFile in $customModsToRestore) {
                 $source = Join-Path $customModTempDir $modFile
                 if (Test-Path -LiteralPath $source) {
@@ -1013,19 +1026,15 @@ function Invoke-StableUpdate {
                     $restoredCount++
                 }
             }
-            Write-Success "Restored $restoredCount custom mod(s)."
-        } else {
-            Write-Info "No custom mods to restore."
         }
 
         # ── Restore override mods (if user chose to keep their versions) ──────
+        $overrideRestoredCount = 0
         if ($keepOverrides -and $overrideConflicts.Count -gt 0 -and (Test-Path -LiteralPath $overrideModTempDir)) {
             $modsDir = Join-Path $instancePath 'mods'
-            $overrideRestoredCount = 0
             foreach ($oc in $overrideConflicts) {
                 $yourSource = Join-Path $overrideModTempDir $oc.YourVersion
                 if (Test-Path -LiteralPath $yourSource) {
-                    # Remove the pack's version first
                     $packDest = Join-Path $modsDir $oc.PackVersion
                     if (Test-Path -LiteralPath $packDest) {
                         Remove-Item -LiteralPath $packDest -Force
@@ -1034,23 +1043,33 @@ function Invoke-StableUpdate {
                     $overrideRestoredCount++
                 }
             }
-            if ($overrideRestoredCount -gt 0) {
-                Write-Success "Restored $overrideRestoredCount override mod(s)."
-            }
+        }
+
+        # Combined restore summary
+        if ($restoredCount -gt 0 -or $overrideRestoredCount -gt 0) {
+            $parts = @()
+            if ($restoredCount -gt 0) { $parts += "$restoredCount custom" }
+            if ($overrideRestoredCount -gt 0) { $parts += "$overrideRestoredCount override" }
+            Write-Success "Restored $($parts -join ' + ') mod(s)."
         }
 
         # ── Apply config patches ──────────────────────────────────────────────
-        Write-Step "Step 7/$totalSteps`: Applying config patches..."
 
-        Invoke-ConfigPatches -Config $Config -InstancePath $instancePath -Target $Target
+        $patchResult = $null
+        $patchResult = Invoke-ConfigPatches -Config $Config -InstancePath $instancePath -Target $Target
+
+        # ── Post-launch patch reminder ────────────────────────────────────────
+
+        if ($patchResult -is [PSCustomObject] -and $patchResult.MissingFiles -gt 0) {
+            Write-Warn "$($patchResult.MissingFiles) patch(es) need first launch — re-apply from Settings > Config Patches."
+            Write-Log "[PATCH] $($patchResult.MissingFiles) patch(es) skipped (files not yet generated)"
+        }
 
         # ── Run verification ──────────────────────────────────────────────────
-        Write-Step "Step 8/$totalSteps`: Running verification..."
 
         Invoke-Verification -InstancePath $instancePath -Target $Target
 
         # ── Record history, update installed version ──────────────────────────
-        Write-Step "Step 9/$totalSteps`: Recording update..."
 
         $historyDetails = "+$($added.Count) -$($removed.Count) ~$($updated.Count)"
         Add-UpdateHistoryEntry -Config $Config -Version $latestVersion -Channel $ChannelLabel -Target $Target -Details $historyDetails
@@ -1065,13 +1084,15 @@ function Invoke-StableUpdate {
         $updateSucceeded = $true
 
         Write-Host ""
-        Write-Host "  ╔══════════════════════════════════════════════════════════════╗" -ForegroundColor Green
-        Write-Host "  ║  Update complete!                                           ║" -ForegroundColor Green
-        Write-Host "  ╚══════════════════════════════════════════════════════════════╝" -ForegroundColor Green
+        Write-Host "  ✓ Update complete!" -ForegroundColor Green
         Write-Host ""
-        Write-Host "  $Target updated to " -NoNewline -ForegroundColor Gray
+        Write-Host "  $($Target.ToUpper()) -> " -NoNewline -ForegroundColor Gray
         Write-Host "v$latestVersion" -ForegroundColor Green
-        Write-Host "  Channel: $ChannelLabel" -ForegroundColor Gray
+        if ($added.Count -eq 0 -and $removed.Count -eq 0 -and $updated.Count -eq 0) {
+            Write-Host "  Mods: re-installed (no changes)" -ForegroundColor DarkGreen
+        } else {
+            Write-Host "  Mods: $($added.Count) added, $($removed.Count) removed, $($updated.Count) updated" -ForegroundColor Gray
+        }
         Write-Host ""
         $openLabel = if ($IsWindows) { "Open $Target folder in Explorer" } else { "Open $Target folder in file manager" }
         Write-MenuOption "O" $openLabel
@@ -1131,7 +1152,6 @@ function Invoke-StableUpdate {
         # Clean up staging folder on success only; keep on failure/cancel
         if ($updateSucceeded) {
             Remove-TempDir $stagingDir
-            Write-Info "Staging folder cleaned up."
         }
         # Keep rollback snapshot until next update (allows user to rollback if game crashes on launch)
         # if ($updateSucceeded) { Remove-TempDir $rollbackDir }
@@ -1202,7 +1222,9 @@ function Move-StagingToInstance {
                 if (Test-Path -LiteralPath $srcItem) {
                     $destItem = Join-Path $instanceRoot $item
                     if (Test-Path -LiteralPath $destItem) {
+                        $oldProgress = $ProgressPreference; $ProgressPreference = 'SilentlyContinue'
                         Remove-Item -LiteralPath $destItem -Recurse -Force
+                        $ProgressPreference = $oldProgress
                     }
                     Move-Item -LiteralPath $srcItem -Destination $destItem -Force
                     Write-Info "  Moved to instance root: $item"
@@ -1218,13 +1240,17 @@ function Move-StagingToInstance {
     $moveErrors = @()
     Get-ChildItem -LiteralPath $contentRoot | ForEach-Object {
         $destPath = Join-Path $DestinationPath $_.Name
+        $oldProgress = $ProgressPreference
         try {
             if (Test-Path -LiteralPath $destPath) {
+                $ProgressPreference = 'SilentlyContinue'
                 Remove-Item -LiteralPath $destPath -Recurse -Force
+                $ProgressPreference = $oldProgress
             }
             Move-Item -LiteralPath $_.FullName -Destination $destPath -Force -ErrorAction Stop
         }
         catch {
+            $ProgressPreference = $oldProgress
             $moveErrors += $_.Name
             Write-Log "[ERROR] Failed to move '$($_.Name)': $($_.Exception.Message)"
         }
@@ -1245,7 +1271,9 @@ function Move-StagingToInstance {
             if (Test-Path -LiteralPath $extractedItem) {
                 $destItem = Join-Path $instanceRoot $item
                 if (Test-Path -LiteralPath $destItem) {
+                    $oldProgress = $ProgressPreference; $ProgressPreference = 'SilentlyContinue'
                     Remove-Item -LiteralPath $destItem -Recurse -Force
+                    $ProgressPreference = $oldProgress
                 }
                 Move-Item -LiteralPath $extractedItem -Destination $destItem -Force
                 Write-Info "  Moved to instance root: $item"
@@ -1284,17 +1312,23 @@ function Invoke-DeleteFolders {
     foreach ($folder in $foldersToDelete) {
         $folderPath = Join-Path $InstancePath $folder
         if (Test-Path -LiteralPath $folderPath) {
+            Write-Host "    $folder/" -NoNewline -ForegroundColor Gray
             try {
+                $oldProgress = $ProgressPreference; $ProgressPreference = 'SilentlyContinue'
                 Remove-Item -LiteralPath $folderPath -Recurse -Force
+                $ProgressPreference = $oldProgress
+                Write-Host " ✓" -ForegroundColor DarkGreen
             }
             catch {
+                $ProgressPreference = $oldProgress
+                Write-Host " ✗" -ForegroundColor Red
                 Write-Err "Failed to delete $folder/: $($_.Exception.Message)"
                 throw
             }
         }
     }
 
-    # Java 17+ specific deletions
+    # Java 17+ specific deletions (non-critical — warn but don't abort if locked)
     if ($JavaVersion -eq 'java17') {
         if ($Target -eq 'server') {
             foreach ($file in $script:ServerJava17FilesToDelete) {
@@ -1304,8 +1338,8 @@ function Invoke-DeleteFolders {
                         Remove-Item -LiteralPath $filePath -Force
                     }
                     catch {
-                        Write-Err "Failed to delete $file`: $($_.Exception.Message)"
-                        throw
+                        Write-Warn "Could not delete $file (may be locked): $($_.Exception.Message)"
+                        Write-Log "[DELETE] Non-critical: failed to delete $file - $($_.Exception.Message)"
                     }
                 }
             }
@@ -1315,11 +1349,14 @@ function Invoke-DeleteFolders {
                 $itemPath = Join-Path $instanceRoot $item
                 if (Test-Path -LiteralPath $itemPath) {
                     try {
+                        $oldProgress = $ProgressPreference; $ProgressPreference = 'SilentlyContinue'
                         Remove-Item -LiteralPath $itemPath -Recurse -Force
+                        $ProgressPreference = $oldProgress
                     }
                     catch {
-                        Write-Err "Failed to delete $item at instance root: $($_.Exception.Message)"
-                        throw
+                        $ProgressPreference = $oldProgress
+                        Write-Warn "Could not delete $item at instance root (may be locked): $($_.Exception.Message)"
+                        Write-Log "[DELETE] Non-critical: failed to delete $item - $($_.Exception.Message)"
                     }
                 }
             }

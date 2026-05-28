@@ -166,7 +166,9 @@ function Invoke-RestoreFiles {
                 if ((Get-Item -LiteralPath $sourcePath).PSIsContainer) {
                     # Remove existing directory first to avoid merge conflicts
                     if (Test-Path -LiteralPath $destPath) {
+                        $oldProgress = $ProgressPreference; $ProgressPreference = 'SilentlyContinue'
                         Remove-Item -LiteralPath $destPath -Recurse -Force
+                        $ProgressPreference = $oldProgress
                     }
                     Copy-Item -LiteralPath $sourcePath -Destination $destPath -Recurse -Force
                 } else {

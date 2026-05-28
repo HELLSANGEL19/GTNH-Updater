@@ -117,12 +117,20 @@ function Invoke-Verification {
         $duplicates = $baseNameMap.GetEnumerator() | Where-Object { $_.Value.Count -gt 1 }
 
         # Second pass: fuzzy matching to catch naming convention differences
-        # (e.g., "Thaumic Machina" vs "ThaumicMachina", "Thaumic-Machina" vs "ThaumicMachina")
+        # (e.g., "Steve-s-Factory-Manager" vs "StevesFactoryManager", "SleepingBags" vs "sleepingbag")
         $fuzzyMap = @{}  # normalized name -> list of filenames
         foreach ($jar in $modJars) {
             $baseName = Get-ModBaseName -FileName $jar.Name
+            # Handle possessives: 's, -s- (Steve's → Steves, Steve-s- → Steves)
+            $fuzzyName = $baseName -replace "['']s\b", 's'
+            $fuzzyName = $fuzzyName -replace '-s-', 's'
             # Aggressively normalize: remove spaces, hyphens, underscores, dots, plus signs
-            $fuzzyName = ($baseName -replace '[\s\-_\.+]', '').ToLower()
+            $fuzzyName = ($fuzzyName -replace '[\s\-_\.+]', '').ToLower()
+            # Strip trailing 's' for plural normalization (SleepingBags → sleepingbag)
+            # Only strip if preceded by a letter that commonly forms plurals (not 'ss', 'ps', 'ns', 'us')
+            if ($fuzzyName.Length -gt 5 -and $fuzzyName.EndsWith('s') -and $fuzzyName -notmatch '(ss|ps|ns|us|is|as)$') {
+                $fuzzyName = $fuzzyName.Substring(0, $fuzzyName.Length - 1)
+            }
             if (-not $fuzzyMap.ContainsKey($fuzzyName)) {
                 $fuzzyMap[$fuzzyName] = @()
             }
@@ -206,9 +214,15 @@ function Invoke-Verification {
             $subMods = @(Get-ChildItem -LiteralPath $subModsPath -Filter '*.jar' -File)
             $crossDupes = @()
             foreach ($subMod in $subMods) {
-                $subBase = (Get-ModBaseName -FileName $subMod.Name) -replace '[\s\-_\.+]', ''
+                $subBase = (Get-ModBaseName -FileName $subMod.Name) -replace "['']s\b", 's'
+                $subBase = ($subBase -replace '-s-', 's') -replace '[\s\-_\.+]', ''
+                $subBase = $subBase.ToLower()
+                if ($subBase.Length -gt 5 -and $subBase.EndsWith('s') -and $subBase -notmatch '(ss|ps|ns|us|is|as)$') { $subBase = $subBase.Substring(0, $subBase.Length - 1) }
                 foreach ($mainMod in $mainMods) {
-                    $mainBase = (Get-ModBaseName -FileName $mainMod) -replace '[\s\-_\.+]', ''
+                    $mainBase = (Get-ModBaseName -FileName $mainMod) -replace "['']s\b", 's'
+                    $mainBase = ($mainBase -replace '-s-', 's') -replace '[\s\-_\.+]', ''
+                    $mainBase = $mainBase.ToLower()
+                    if ($mainBase.Length -gt 5 -and $mainBase.EndsWith('s') -and $mainBase -notmatch '(ss|ps|ns|us|is|as)$') { $mainBase = $mainBase.Substring(0, $mainBase.Length - 1) }
                     if ($subBase -eq $mainBase) {
                         $crossDupes += "$($subMod.Name) (mods/1.7.10/) conflicts with $mainMod (mods/)"
                         break

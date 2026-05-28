@@ -40,137 +40,89 @@ function Show-MainMenu {
     Clear-Host
     Write-Banner
 
-    # Show current status
-    Write-Host ""
-    $serverVerRaw = $Config.InstalledServerVersion ? $Config.InstalledServerVersion : '(unknown)'
-    $clientVerRaw = $Config.InstalledClientVersion ? $Config.InstalledClientVersion : '(unknown)'
-    # Clean up "nightly-" and "experimental-" from display (keep the date/version part)
-    $serverVer = $serverVerRaw -replace 'nightly-', '' -replace 'experimental-', ''
-    $clientVer = $clientVerRaw -replace 'nightly-', '' -replace 'experimental-', ''
     $channel = $Config.DefaultChannel ?? 'stable'
-    $latestStable = $script:CachedLatestVersion ? $script:CachedLatestVersion : '(not checked)'
     $isStableChannel = $channel -eq 'stable'
     $hasServer = -not [string]::IsNullOrEmpty($Config.ServerPath)
     $hasClient = -not [string]::IsNullOrEmpty($Config.ClientInstancePath)
 
     # Determine what "latest" means for the current channel
     $latestForChannel = if ($isStableChannel) { $script:CachedLatestVersion } else { $script:CachedLatestNightly }
-
-    # Normalize versions for comparison (trim whitespace, strip leading 'v')
     $normalizeVer = { param($v) if ($v) { $v.Trim().TrimStart('v', 'V') } else { $null } }
     $latestNorm = & $normalizeVer $latestForChannel
 
-    # Server version display
-    if ($hasServer) {
-    Write-Host "  Server:         " -NoNewline -ForegroundColor Gray
-    $serverNorm = & $normalizeVer $Config.InstalledServerVersion
-    if ($serverNorm -and $latestNorm -and $serverNorm -eq $latestNorm) {
-        Write-Host "$serverVer " -NoNewline -ForegroundColor Green
-        Write-Host "(up to date)" -ForegroundColor DarkGreen
-    } elseif ($isStableChannel -and $Config.InstalledServerVersion -match '^\d+\.\d+\.\d+$' -and $script:CachedLatestVersion -and $Config.InstalledServerVersion -ne $script:CachedLatestVersion) {
-        Write-Host "$serverVer" -NoNewline -ForegroundColor Yellow
-        Write-Host "  ->  $($script:CachedLatestVersion) available" -ForegroundColor DarkYellow
-    } else {
-        Write-Host "$serverVer" -ForegroundColor Green
-    }
-    } # end if ($hasServer)
-
-    # Client version display
-    if ($hasClient) {
-    Write-Host "  Client:         " -NoNewline -ForegroundColor Gray
-    $clientNorm = & $normalizeVer $Config.InstalledClientVersion
-    if ($clientNorm -and $latestNorm -and $clientNorm -eq $latestNorm) {
-        Write-Host "$clientVer " -NoNewline -ForegroundColor Green
-        Write-Host "(up to date)" -ForegroundColor DarkGreen
-    } elseif ($isStableChannel -and $Config.InstalledClientVersion -match '^\d+\.\d+\.\d+$' -and $script:CachedLatestVersion -and $Config.InstalledClientVersion -ne $script:CachedLatestVersion) {
-        Write-Host "$clientVer" -NoNewline -ForegroundColor Yellow
-        Write-Host "  ->  $($script:CachedLatestVersion) available" -ForegroundColor DarkYellow
-    } else {
-        Write-Host "$clientVer" -ForegroundColor Green
-    }
-    } # end if ($hasClient)
-
+    # Version display
     Write-Host ""
-    Write-Host "  Latest stable:  " -NoNewline -ForegroundColor Gray
-    Write-Host "$latestStable" -NoNewline -ForegroundColor Cyan
-    if ($isStableChannel -and $script:CachedLatestBeta) {
-        Write-Host "  |  Beta: $($script:CachedLatestBeta)" -ForegroundColor DarkYellow
-    } else {
-        Write-Host ""
-    }
-    if (-not $isStableChannel -and $script:CachedLatestNightly) {
-        $channelLabel = $Config.DefaultChannel ?? 'daily'
-        $displayVersion = $script:CachedLatestNightly -replace 'nightly-', '' -replace 'experimental-', ''
-        $labelText = "  Latest ${channelLabel}:"
-        $padded = $labelText.PadRight(18)
-        Write-Host "$padded" -NoNewline -ForegroundColor Gray
-        Write-Host "$displayVersion" -NoNewline -ForegroundColor Magenta
-        # Show "mods updated" hint if the manifest was refreshed more recently than the config tag date
-        if ($script:CachedNightlyLastUpdated) {
-            try {
-                $updatedDate = ([datetime]::Parse($script:CachedNightlyLastUpdated)).ToString('yyyy-MM-dd')
-                # Extract the date from the config tag (e.g., "2.9.0-nightly-2026-05-11" -> "2026-05-11")
-                $configDate = if ($script:CachedLatestNightly -match '(\d{4}-\d{2}-\d{2})$') { $Matches[1] } else { '' }
-                if ($updatedDate -and $configDate -and $updatedDate -ne $configDate) {
-                    Write-Host "  (mods updated $updatedDate)" -ForegroundColor DarkGray -NoNewline
-                }
-            } catch {}
+    if ($hasServer) {
+        $serverVer = ($Config.InstalledServerVersion ?? '(unknown)') -replace 'nightly-|experimental-', ''
+        Write-Host "  Server:     " -NoNewline -ForegroundColor Gray
+        $serverNorm = & $normalizeVer $Config.InstalledServerVersion
+        if (-not $serverNorm) {
+            Write-Host "$serverVer" -ForegroundColor DarkGray
+        } elseif ($latestNorm -and $serverNorm -eq $latestNorm) {
+            Write-Host "$serverVer " -NoNewline -ForegroundColor Green
+            Write-Host "(up to date)" -ForegroundColor DarkGreen
+        } elseif ($latestNorm -and $serverNorm -ne $latestNorm) {
+            $latestDisplay = ($latestForChannel ?? '') -replace 'nightly-|experimental-', ''
+            Write-Host "$serverVer" -NoNewline -ForegroundColor Yellow
+            Write-Host "  ->  $latestDisplay" -ForegroundColor DarkYellow
+        } else {
+            Write-Host "$serverVer" -ForegroundColor Green
         }
-        Write-Host ""
     }
-    Write-Host "  Channel:        " -NoNewline -ForegroundColor Gray
+    if ($hasClient) {
+        $clientVer = ($Config.InstalledClientVersion ?? '(unknown)') -replace 'nightly-|experimental-', ''
+        Write-Host "  Client:     " -NoNewline -ForegroundColor Gray
+        $clientNorm = & $normalizeVer $Config.InstalledClientVersion
+        if (-not $clientNorm) {
+            Write-Host "$clientVer" -ForegroundColor DarkGray
+        } elseif ($latestNorm -and $clientNorm -eq $latestNorm) {
+            Write-Host "$clientVer " -NoNewline -ForegroundColor Green
+            Write-Host "(up to date)" -ForegroundColor DarkGreen
+        } elseif ($latestNorm -and $clientNorm -ne $latestNorm) {
+            $latestDisplay = ($latestForChannel ?? '') -replace 'nightly-|experimental-', ''
+            Write-Host "$clientVer" -NoNewline -ForegroundColor Yellow
+            Write-Host "  ->  $latestDisplay" -ForegroundColor DarkYellow
+        } else {
+            Write-Host "$clientVer" -ForegroundColor Green
+        }
+    }
+    if (-not $hasServer -and -not $hasClient) {
+        Write-Host "  Server:     " -NoNewline -ForegroundColor DarkGray
+        Write-Host "(not configured)" -ForegroundColor DarkGray
+        Write-Host "  Client:     " -NoNewline -ForegroundColor DarkGray
+        Write-Host "(not configured)" -ForegroundColor DarkGray
+    }
+
+    Write-Host "  Channel:    " -NoNewline -ForegroundColor Gray
     Write-Host "$channel" -ForegroundColor $(if ($isStableChannel) { 'Cyan' } else { 'Magenta' })
 
     # Profile indicator (only shown when not on the default profile)
     $activeProfileName = if ($script:ConfigPath -match 'gtnh-updater-config-(.+)\.json$') { $Matches[1] } else { $null }
     if ($activeProfileName) {
-        $profileDisplay = if ($Config.ProfileLabel) { "$activeProfileName  ($($Config.ProfileLabel))" } else { $activeProfileName }
-        Write-Host "  Profile:        " -NoNewline -ForegroundColor Gray
+        $profileDisplay = if ($Config.ProfileLabel) { "$activeProfileName ($($Config.ProfileLabel))" } else { $activeProfileName }
+        Write-Host "  Profile:    " -NoNewline -ForegroundColor Gray
         Write-Host "$profileDisplay" -ForegroundColor DarkYellow
     }
 
-    # Custom mods and patches summary (only show if any are configured)
-    $serverModCount = ($Config.CustomServerMods ?? @()).Count
-    $clientModCount = ($Config.CustomClientMods ?? @()).Count
-    $overrideServerCount = ($Config.OverrideServerMods ?? @()).Count
-    $overrideClientCount = ($Config.OverrideClientMods ?? @()).Count
+    # Custom mods/patches summary (only show if any configured)
+    $modsTotal = ($Config.CustomServerMods ?? @()).Count + ($Config.CustomClientMods ?? @()).Count +
+                 ($Config.OverrideServerMods ?? @()).Count + ($Config.OverrideClientMods ?? @()).Count
     $patchCount = ($Config.ConfigPatches ?? @()).Count
-    if ($serverModCount -gt 0 -or $clientModCount -gt 0 -or $overrideServerCount -gt 0 -or $overrideClientCount -gt 0 -or $patchCount -gt 0) {
-        $summaryParts = @()
-        if ($serverModCount -gt 0 -or $clientModCount -gt 0) {
-            $modParts = @()
-            if ($serverModCount -gt 0) { $modParts += "$serverModCount server" }
-            if ($clientModCount -gt 0) { $modParts += "$clientModCount client" }
-            $summaryParts += "Mods: $($modParts -join ', ')"
-        }
-        if ($overrideServerCount -gt 0 -or $overrideClientCount -gt 0) {
-            $ovParts = @()
-            if ($overrideServerCount -gt 0) { $ovParts += "$overrideServerCount server" }
-            if ($overrideClientCount -gt 0) { $ovParts += "$overrideClientCount client" }
-            $summaryParts += "Overrides: $($ovParts -join ', ')"
-        }
-        if ($patchCount -gt 0) {
-            $summaryParts += "Patches: $patchCount"
-        }
-        Write-Host "  Custom:         " -NoNewline -ForegroundColor Gray
-        Write-Host ($summaryParts -join '  |  ') -ForegroundColor DarkCyan
-    }
-
-    if (-not $hasServer -and -not $hasClient) {
-        Write-Host "  Server:         " -NoNewline -ForegroundColor DarkGray
-        Write-Host "(not configured)" -ForegroundColor DarkGray
-        Write-Host "  Client:         " -NoNewline -ForegroundColor DarkGray
-        Write-Host "(not configured)" -ForegroundColor DarkGray
+    if ($modsTotal -gt 0 -or $patchCount -gt 0) {
+        $parts = @()
+        if ($modsTotal -gt 0) { $parts += "$modsTotal mods" }
+        if ($patchCount -gt 0) { $parts += "$patchCount patches" }
+        Write-Host "  Custom:     " -NoNewline -ForegroundColor Gray
+        Write-Host ($parts -join ', ') -ForegroundColor DarkCyan
     }
 
     # Version mismatch warning
     Show-VersionMismatchWarning -Config $Config
 
-    # Divider between status and menu
+    # Divider and menu
     Write-Host ""
     Write-Host "  $('-' * 56)" -ForegroundColor DarkGray
 
-    # Menu options
     Write-Host ""
     Write-MenuOption "1" "Update GTNH ($channel)"
     Write-MenuOption "2" "Settings"
@@ -180,9 +132,7 @@ function Show-MainMenu {
     Write-MenuOption "H" "Help"
     if ($script:DevMode) {
         Write-Host ""
-        Write-Host "  [" -NoNewline
-        Write-Host "D" -ForegroundColor DarkYellow -NoNewline
-        Write-Host "] Dev tools"
+        Write-MenuOption "D" "Dev tools"
     }
     Write-Host ""
     Write-MenuOption "Q" "Quit"
@@ -291,6 +241,126 @@ function Invoke-TargetSelection {
     }
 }
 
+function Invoke-ForceCleanSync {
+    <#
+    .SYNOPSIS
+        Reset nightly state files to trigger a full re-download on next update.
+    .DESCRIPTION
+        Deletes .gtnh-nightly-state.json for selected targets, clears installed
+        version tracking, and stashes custom mods so they survive the transition wipe.
+    .PARAMETER Config
+        The config PSCustomObject.
+    #>
+    param([Parameter(Mandatory)][PSCustomObject]$Config)
+
+    Write-Header "Force Clean Sync"
+    Write-Host ""
+    Write-Info "Use this if your daily/experimental updates are broken or out of sync."
+    Write-Info "This resets the updater's tracking state. On the next update, ALL mods"
+    Write-Info "will be re-downloaded from scratch (clean slate)."
+    Write-Host ""
+    Write-Info "What's preserved: custom mods, world data, backups, config patches."
+    Write-Host ""
+
+    $targets = @()
+    if (-not [string]::IsNullOrEmpty($Config.ServerPath)) { $targets += 'server' }
+    if (-not [string]::IsNullOrEmpty($Config.ClientInstancePath)) { $targets += 'client' }
+
+    if ($targets.Count -eq 0) {
+        Write-Warn "No server or client paths configured."
+        return
+    }
+
+    # Show status
+    $hasState = @()
+    foreach ($tgt in $targets) {
+        $instPath = if ($tgt -eq 'server') { $Config.ServerPath } else { $Config.ClientInstancePath }
+        $statePath = Join-Path $instPath '.gtnh-nightly-state.json'
+        Write-Host "  $($tgt.ToUpper()): " -NoNewline -ForegroundColor Gray
+        if (Test-Path -LiteralPath $statePath) {
+            Write-Host "State file found" -ForegroundColor Yellow
+            $hasState += $tgt
+        } else {
+            Write-Host "No state file (already clean)" -ForegroundColor Green
+        }
+    }
+    Write-Host ""
+
+    if ($hasState.Count -eq 0) {
+        Write-Info "All targets are already clean. Nothing to reset."
+        return
+    }
+
+    # If both have state, let user choose
+    $resetTargets = $hasState
+    $cancelled = $false
+    if ($hasState.Count -gt 1) {
+        Write-MenuOption "1" "Reset client only"
+        Write-MenuOption "2" "Reset server only"
+        Write-MenuOption "3" "Reset both"
+        Write-MenuOption "R" "Cancel"
+        $resetChoice = Read-MenuChoice "Which target(s) to reset?"
+        switch ($resetChoice) {
+            '1' { $resetTargets = @('client') }
+            '2' { $resetTargets = @('server') }
+            '3' { $resetTargets = $hasState }
+            default { $cancelled = $true }
+        }
+        Write-Host ""
+    }
+
+    if ($cancelled) {
+        Write-Info "Cancelled."
+        return
+    }
+
+    if (Confirm-Action "Reset state and force clean sync on next update?") {
+        foreach ($tgt in $resetTargets) {
+            $instPath = if ($tgt -eq 'server') { $Config.ServerPath } else { $Config.ClientInstancePath }
+            $statePath = Join-Path $instPath '.gtnh-nightly-state.json'
+            if (Test-Path -LiteralPath $statePath) {
+                Remove-Item -LiteralPath $statePath -Force -ErrorAction SilentlyContinue
+                Write-Success "Reset $tgt state."
+            }
+            if ($tgt -eq 'server') { $Config.InstalledServerVersion = '' }
+            else { $Config.InstalledClientVersion = '' }
+
+            # Stash custom mods NOW so they survive the upcoming transition wipe
+            $customMods = @($tgt -eq 'server' ? ($Config.CustomServerMods ?? @()) : ($Config.CustomClientMods ?? @()))
+            if ($customMods.Count -gt 0) {
+                $modsDir = Join-Path $instPath 'mods'
+                $stashDir = Join-Path (Split-Path -Parent $instPath) ".gtnh-custom-mods-${tgt}"
+                New-Item -Path $stashDir -ItemType Directory -Force | Out-Null
+                $stashedCount = 0
+                foreach ($cm in $customMods) {
+                    $cmPath = Join-Path $modsDir $cm
+                    if (Test-Path -LiteralPath $cmPath) {
+                        Copy-Item -LiteralPath $cmPath -Destination (Join-Path $stashDir $cm) -Force
+                        $stashedCount++
+                    } else {
+                        # Try base name match
+                        $cmBase = Get-ModBaseName -FileName $cm
+                        $match = Get-ChildItem -LiteralPath $modsDir -Filter '*.jar' -File -ErrorAction SilentlyContinue |
+                            Where-Object { (Get-ModBaseName -FileName $_.Name) -eq $cmBase } | Select-Object -First 1
+                        if ($match) {
+                            Copy-Item -LiteralPath $match.FullName -Destination (Join-Path $stashDir $match.Name) -Force
+                            $stashedCount++
+                        }
+                    }
+                }
+                if ($stashedCount -gt 0) {
+                    Write-Success "Stashed $stashedCount custom mod(s) for $tgt."
+                }
+            }
+        }
+        Save-Config -Config $Config
+        Write-Host ""
+        Write-Success "Done. Run the updater now to perform a clean sync."
+    } else {
+        Write-Info "Cancelled."
+    }
+}
+
 function Invoke-SettingsMenu {
     <#
     .SYNOPSIS
@@ -325,40 +395,53 @@ function Invoke-SettingsMenu {
 
         Write-MenuOption "1" "Instance paths"
         Write-MenuOption "2" "Update preferences"
-        Write-MenuOption "3" "Custom mods"
+        Write-MenuOption "3" "Mods (custom + override)"
         Write-MenuOption "4" "Config patches"
         Write-MenuOption "5" "Backups and cache"
-        Write-MenuOption "6" "Re-run setup wizard"
-        Write-MenuOption "E" "Export config"
-        Write-MenuOption "I" "Import config"
-        Write-MenuOption "P" "Profiles"
+        Write-MenuOption "6" "Advanced (profiles, export/import, wizard)"
         Write-Host ""
         Write-MenuOption "R" "Return to main menu"
 
         $choice = Read-MenuChoice "Select setting"
 
         switch ($choice) {
-            '1' {
-                Invoke-InstancePathsMenu -Config $Config
-            }
+            '1' { Invoke-InstancePathsMenu -Config $Config }
+            '2' { Invoke-UpdatePreferencesMenu -Config $Config }
+            '3' { Invoke-CustomModsMenu -Config $Config }
+            '4' { Invoke-ConfigPatchMenu -Config $Config }
+            '5' { Invoke-BackupsAndCacheMenu -Config $Config }
+            '6' { $Config = Invoke-AdvancedSettingsMenu -Config $Config }
+            { $_ -eq 'R' -or $_ -eq 'r' } { return }
+            default { Write-Err "Invalid selection. Please try again." }
+        }
+    }
+}
+
+function Invoke-AdvancedSettingsMenu {
+    <#
+    .SYNOPSIS
+        Advanced settings sub-menu: profiles, export/import, wizard, force sync.
+    .PARAMETER Config
+        The config PSCustomObject.
+    #>
+    param([Parameter(Mandatory)][PSCustomObject]$Config)
+
+    while ($true) {
+        Write-Header "Settings > Advanced"
+
+        Write-MenuOption "1" "Profiles"
+        Write-MenuOption "2" "Export config"
+        Write-MenuOption "3" "Import config"
+        Write-MenuOption "4" "Re-run setup wizard"
+        Write-MenuOption "5" "Force clean sync (fixes update issues)"
+        Write-Host ""
+        Write-MenuOption "R" "Return"
+
+        $choice = Read-MenuChoice "Select option"
+
+        switch ($choice) {
+            '1' { $Config = Invoke-ProfileMenu -Config $Config }
             '2' {
-                Invoke-UpdatePreferencesMenu -Config $Config
-            }
-            '3' {
-                Invoke-CustomModsMenu -Config $Config
-            }
-            '4' {
-                Invoke-ConfigPatchMenu -Config $Config
-            }
-            '5' {
-                Invoke-BackupsAndCacheMenu -Config $Config
-            }
-            '6' {
-                Write-Info "Re-running setup wizard..."
-                $Config = Invoke-InteractiveSetup -ExistingConfig $Config
-                Wait-ForKey
-            }
-            { $_ -eq 'E' -or $_ -eq 'e' } {
                 $defaultExport = Join-Path $script:ScriptDir 'gtnh-config-export.json'
                 $exportPath = Read-UserInput "Export path" -Default $defaultExport
                 if ($exportPath) {
@@ -366,7 +449,7 @@ function Invoke-SettingsMenu {
                 }
                 Wait-ForKey
             }
-            { $_ -eq 'I' -or $_ -eq 'i' } {
+            '3' {
                 $importPath = Read-UserInput "Path to config file to import"
                 if ($importPath -and (Test-Path -LiteralPath $importPath)) {
                     $imported = Import-ConfigFile -ImportPath $importPath
@@ -381,7 +464,6 @@ function Invoke-SettingsMenu {
                             }
                         }
                         Write-Success "Config imported and saved. Paths may need updating for this machine."
-                        # Re-detect versions from imported paths
                         foreach ($tgt in @('server', 'client')) {
                             $p = if ($tgt -eq 'server') { $Config.ServerPath } else { $Config.ClientInstancePath }
                             if (-not [string]::IsNullOrEmpty($p) -and (Test-Path -LiteralPath $p)) {
@@ -399,15 +481,18 @@ function Invoke-SettingsMenu {
                 }
                 Wait-ForKey
             }
-            { $_ -eq 'P' -or $_ -eq 'p' } {
-                $Config = Invoke-ProfileMenu -Config $Config
+            '4' {
+                Write-Info "Re-running setup wizard..."
+                $result = Invoke-InteractiveSetup -ExistingConfig $Config
+                if ($null -ne $result) { $Config = $result }
+                Wait-ForKey
             }
-            { $_ -eq 'R' -or $_ -eq 'r' } {
-                return
+            '5' {
+                Invoke-ForceCleanSync -Config $Config
+                Wait-ForKey
             }
-            default {
-                Write-Err "Invalid selection. Please try again."
-            }
+            { $_ -eq 'R' -or $_ -eq 'r' } { return $Config }
+            default { Write-Err "Invalid selection. Please try again." }
         }
     }
 }
@@ -678,12 +763,12 @@ function Invoke-UpdatePreferencesMenu {
                 Write-Info "  (Daily/experimental users: leave blank and just run an update)"
                 $newVer = $null
                 do {
-                    $input = Read-UserInput "GTNH version"
-                    if (-not $input) { break }
-                    if ($input -match '^GTNH-(\d{4}-\d{2}-\d{2})') { $newVer = "nightly-$($Matches[1])"; break }
-                    if ($input -match '^\d+\.\d+\.\d+') { $newVer = $input }
-                    elseif ($input -match '\d{4}-\d{2}-\d{2}') {
-                        $dateMatch = [regex]::Match($input, '\d{4}-\d{2}-\d{2}').Value
+                    $verInput = Read-UserInput "GTNH version"
+                    if (-not $verInput) { break }
+                    if ($verInput -match '^GTNH-(\d{4}-\d{2}-\d{2})') { $newVer = "nightly-$($Matches[1])"; break }
+                    if ($verInput -match '^\d+\.\d+\.\d+') { $newVer = $verInput }
+                    elseif ($verInput -match '\d{4}-\d{2}-\d{2}') {
+                        $dateMatch = [regex]::Match($verInput, '\d{4}-\d{2}-\d{2}').Value
                         $newVer = "nightly-$dateMatch"; break
                     }
                     else { Write-Warn "Enter a version like 2.8.4. Daily users can leave blank." }
@@ -748,13 +833,23 @@ function Invoke-CustomModsMenu {
     }
 
     while ($true) {
-        Write-Header "Settings > Custom Mods"
+        Write-Header "Settings > Mods"
 
-        Write-MenuOption "1" "Server custom mods"
-        Write-MenuOption "2" "Client custom mods"
+        $serverCustomCount = ($Config.CustomServerMods ?? @()).Count
+        $clientCustomCount = ($Config.CustomClientMods ?? @()).Count
+        $serverOverrideCount = ($Config.OverrideServerMods ?? @()).Count
+        $clientOverrideCount = ($Config.OverrideClientMods ?? @()).Count
+
+        Write-Host "  Custom:   " -NoNewline -ForegroundColor Gray
+        Write-Host "$serverCustomCount server, $clientCustomCount client" -ForegroundColor Cyan
+        Write-Host "  Override: " -NoNewline -ForegroundColor Gray
+        Write-Host "$serverOverrideCount server, $clientOverrideCount client" -ForegroundColor Cyan
         Write-Host ""
-        Write-MenuOption "3" "Server override mods (pack mods replaced with newer versions)"
-        Write-MenuOption "4" "Client override mods (pack mods replaced with newer versions)"
+
+        Write-MenuOption "1" "Custom mods (server)"
+        Write-MenuOption "2" "Custom mods (client)"
+        Write-MenuOption "3" "Override mods (server)"
+        Write-MenuOption "4" "Override mods (client)"
         Write-Host ""
         Write-MenuOption "R" "Return"
 
@@ -836,12 +931,8 @@ function Invoke-BackupsAndCacheMenu {
                         Save-Config -Config $Config
                         if ($Config.BackupEnabled) {
                             Write-Success "Pre-update backups enabled."
-                            Write-Info "A full backup (including world data) will be created before each update."
-                            Write-Info "Rollback snapshots are always created regardless of this setting."
                         } else {
-                            Write-Success "Pre-update backups disabled."
-                            Write-Info "Rollback snapshots still protect your mods/config before each update."
-                            Write-Info "Use 'Create backup now' for manual full backups when needed."
+                            Write-Success "Pre-update backups disabled (rollback snapshots still active)."
                         }
                     }
                     '2' {
@@ -895,7 +986,9 @@ function Invoke-BackupsAndCacheMenu {
                     Write-MenuOption "1" "Server"
                     Write-MenuOption "2" "Client"
                     Write-MenuOption "3" "Both"
+                    Write-MenuOption "R" "Cancel"
                     $tChoice = Read-MenuChoice "Target"
+                    if ($tChoice -eq 'r' -or $tChoice -eq 'R') { continue }
                     $doServer = $tChoice -eq '1' -or $tChoice -eq '3'
                     $doClient = $tChoice -eq '2' -or $tChoice -eq '3'
                 } else {
@@ -935,15 +1028,15 @@ function Invoke-BackupsAndCacheMenu {
                                    elseif ($hours -lt 24) { " (~${hours}h ago)" }
                                    else { " (~$([math]::Floor($hours / 24))d ago)" }
                     } catch {}
-                    Write-Host "  [$($ri + 1)] " -NoNewline -ForegroundColor White
-                    Write-Host "$($snap.Target)" -NoNewline -ForegroundColor Cyan
-                    Write-Host " — $($snap.Name)$snapAge" -ForegroundColor Gray
+                    Write-Host "  [$($ri + 1)] " -NoNewline -ForegroundColor Cyan
+                    Write-Host "$($snap.Target)" -NoNewline -ForegroundColor $(if ($snap.Target -eq 'server') { 'Green' } else { 'Cyan' })
+                    Write-Host "$snapAge" -ForegroundColor Gray
                 }
                 Write-Host ""
                 Write-MenuOption "R" "Cancel"
 
                 $rollChoice = Read-MenuChoice "Select snapshot to restore"
-                if ($rollChoice -eq 'r' -or $rollChoice -eq 'R') { Wait-ForKey; continue }
+                if ($rollChoice -eq 'r' -or $rollChoice -eq 'R') { continue }
 
                 $rollIdx = 0
                 if ([int]::TryParse($rollChoice, [ref]$rollIdx) -and $rollIdx -ge 1 -and $rollIdx -le $rollbackAvailable.Count) {
@@ -1223,13 +1316,13 @@ function Invoke-OverrideModsMenu {
                 Wait-ForKey
             }
             'A' {
-                $input = Read-UserInput "Mod filename (e.g. angelica-1.0.0-beta66b.jar)"
-                if ($input -and $input -match '\.jar$') {
-                    if ($Target -eq 'server') { $Config.OverrideServerMods = @($Config.OverrideServerMods) + $input }
-                    else { $Config.OverrideClientMods = @($Config.OverrideClientMods) + $input }
+                $modInput = Read-UserInput "Mod filename (e.g. angelica-1.0.0-beta66b.jar)"
+                if ($modInput -and $modInput -match '\.jar$') {
+                    if ($Target -eq 'server') { $Config.OverrideServerMods = @($Config.OverrideServerMods) + $modInput }
+                    else { $Config.OverrideClientMods = @($Config.OverrideClientMods) + $modInput }
                     Save-Config -Config $Config
-                    Write-Success "Added: $input"
-                } elseif ($input) {
+                    Write-Success "Added: $modInput"
+                } elseif ($modInput) {
                     Write-Warn "Must be a .jar filename."
                 }
                 Wait-ForKey
@@ -2889,26 +2982,6 @@ function Invoke-MainLoop {
         # Clean up stale files from previous runs
         Invoke-StartupCleanup
 
-        # Check for rollback snapshots (available for manual rollback if game crashes after update)
-        $snapshotFound = $false
-        foreach ($tgt in @('server', 'client')) {
-            $instPath = if ($tgt -eq 'server') { $config.ServerPath } else { $config.ClientInstancePath }
-            if ([string]::IsNullOrEmpty($instPath)) { continue }
-            $parentDir = Split-Path -Parent $instPath
-            if (-not (Test-Path -LiteralPath $parentDir)) { continue }
-            foreach ($pattern in @(".gtnh-rollback-${tgt}", ".gtnh-rollback-nightly-${tgt}")) {
-                if (Test-Path -LiteralPath (Join-Path $parentDir $pattern)) {
-                    $snapshotFound = $true
-                    break
-                }
-            }
-            if ($snapshotFound) { break }
-        }
-        if ($snapshotFound) {
-            Write-Info "Rollback snapshot available — if your game crashes after an update, use Settings > Backups and Cache > Rollback."
-            Write-Host ""
-        }
-
         # Profile picker: show only when more than one profile exists
         $allProfiles = Get-ProfileList
         if ($allProfiles.Count -gt 1) {
@@ -2963,6 +3036,25 @@ function Invoke-MainLoop {
         Write-Log "[CONFIG] Custom server mods: $($config.CustomServerMods.Count)"
         Write-Log "[CONFIG] Custom client mods: $($config.CustomClientMods.Count)"
         Write-Log "[CONFIG] Config patches: $($config.ConfigPatches.Count)"
+
+        # Check for rollback snapshots (available for manual rollback if game crashes after update)
+        $snapshotFound = $false
+        foreach ($tgt in @('server', 'client')) {
+            $instPath = if ($tgt -eq 'server') { $config.ServerPath } else { $config.ClientInstancePath }
+            if ([string]::IsNullOrEmpty($instPath)) { continue }
+            $parentDir = Split-Path -Parent $instPath
+            if (-not (Test-Path -LiteralPath $parentDir)) { continue }
+            foreach ($pattern in @(".gtnh-rollback-${tgt}", ".gtnh-rollback-nightly-${tgt}")) {
+                if (Test-Path -LiteralPath (Join-Path $parentDir $pattern)) {
+                    $snapshotFound = $true
+                    break
+                }
+            }
+            if ($snapshotFound) { break }
+        }
+        if ($snapshotFound) {
+            $script:RollbackSnapshotAvailable = $true
+        }
 
         # Show "what's new" if the script version changed since last run
         $lastSeenVersion = $config.PSObject.Properties.Name -contains 'LastSeenScriptVersion' ? $config.LastSeenScriptVersion : $null

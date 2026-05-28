@@ -240,7 +240,7 @@ function Invoke-InteractiveSetup {
     # ========================================================================
     # Step 1: Java Detection
     # ========================================================================
-    Write-Header "Step 1/7: Java Installation"
+    Write-Header "Java Installation"
 
     $javaInstalls = Find-JavaInstallations
 
@@ -326,7 +326,7 @@ function Invoke-InteractiveSetup {
     # ========================================================================
     # Step 2: What are you managing?
     # ========================================================================
-    Write-Header "Step 2/7: What do you manage?"
+    Write-Header "What do you manage?"
 
     Write-Info "What will you use this updater for?"
     Write-MenuOption "1" "Server only (dedicated server, no client on this machine)"
@@ -348,7 +348,7 @@ function Invoke-InteractiveSetup {
     # Step 3: Server Instance Detection (skipped if not managing a server)
     # ========================================================================
     if ($wantServer) {
-    Write-Header "Step 3/7: GTNH Server Instance"
+    Write-Header "GTNH Server Instance"
 
     $serverInstances = Find-ServerInstances
 
@@ -419,7 +419,7 @@ function Invoke-InteractiveSetup {
     # Step 4: Client Instance Detection (skipped if not managing a client)
     # ========================================================================
     if ($wantClient) {
-    Write-Header "Step 4/7: GTNH Client Instance (Prism Launcher)"
+    Write-Header "GTNH Client Instance"
 
     $clientInstances = Find-PrismInstances
 
@@ -489,7 +489,7 @@ function Invoke-InteractiveSetup {
     # ========================================================================
     # Step 5: Preferences
     # ========================================================================
-    Write-Header "Step 5/7: Preferences"
+    Write-Header "Preferences"
 
     # Default channel
     Write-Info "Select default update channel:"
@@ -555,11 +555,11 @@ function Invoke-InteractiveSetup {
         if ($hasServer) {
             $serverVersion = $null
             do {
-                $input = Read-UserInput "Server version" -Default ($serverDetected ?? '')
-                if (-not $input -or $input -eq ($serverDetected ?? '')) { $serverVersion = $serverDetected; break }
-                if ($input -match '^(?:GTNH-)?(\d{4}-\d{2}-\d{2})') { $serverVersion = "nightly-$($Matches[1])"; break }
-                if ($input -match '^nightly-') { $serverVersion = $input; break }
-                if ($input -match '^\d+\.\d+\.\d+') { $serverVersion = $input }
+                $verInput = Read-UserInput "Server version" -Default ($serverDetected ?? '')
+                if (-not $verInput -or $verInput -eq ($serverDetected ?? '')) { $serverVersion = $serverDetected; break }
+                if ($verInput -match '^(?:GTNH-)?(\d{4}-\d{2}-\d{2})') { $serverVersion = "nightly-$($Matches[1])"; break }
+                if ($verInput -match '^nightly-') { $serverVersion = $verInput; break }
+                if ($verInput -match '^\d+\.\d+\.\d+([-_](beta|rc|pre)[-_]?\d*)?$') { $serverVersion = $verInput }
                 else { Write-Warn "Enter a version like 2.8.4 or 2026-05-01. Daily users can press Enter to skip." }
             } while (-not $serverVersion)
             if ($serverVersion) { $config.InstalledServerVersion = $serverVersion }
@@ -567,11 +567,11 @@ function Invoke-InteractiveSetup {
         if ($hasClient) {
             $clientVersion = $null
             do {
-                $input = Read-UserInput "Client version" -Default ($clientDetected ?? '')
-                if (-not $input -or $input -eq ($clientDetected ?? '')) { $clientVersion = $clientDetected; break }
-                if ($input -match '^(?:GTNH-)?(\d{4}-\d{2}-\d{2})') { $clientVersion = "nightly-$($Matches[1])"; break }
-                if ($input -match '^nightly-') { $clientVersion = $input; break }
-                if ($input -match '^\d+\.\d+\.\d+') { $clientVersion = $input }
+                $verInput = Read-UserInput "Client version" -Default ($clientDetected ?? '')
+                if (-not $verInput -or $verInput -eq ($clientDetected ?? '')) { $clientVersion = $clientDetected; break }
+                if ($verInput -match '^(?:GTNH-)?(\d{4}-\d{2}-\d{2})') { $clientVersion = "nightly-$($Matches[1])"; break }
+                if ($verInput -match '^nightly-') { $clientVersion = $verInput; break }
+                if ($verInput -match '^\d+\.\d+\.\d+([-_](beta|rc|pre)[-_]?\d*)?$') { $clientVersion = $verInput }
                 else { Write-Warn "Enter a version like 2.8.4 or 2026-05-01. Daily users can press Enter to skip." }
             } while (-not $clientVersion)
             if ($clientVersion) { $config.InstalledClientVersion = $clientVersion }
@@ -593,17 +593,17 @@ function Invoke-InteractiveSetup {
         Write-Info "  (Daily/experimental users: skip this and just run an update)"
         $currentVersion = $null
         do {
-            $input = Read-UserInput "Current GTNH version"
-            if (-not $input) { break }
-            if ($input -match '^(?:GTNH-)?(\d{4}-\d{2}-\d{2})') {
+            $verInput = Read-UserInput "Current GTNH version"
+            if (-not $verInput) { break }
+            if ($verInput -match '^(?:GTNH-)?(\d{4}-\d{2}-\d{2})') {
                 $currentVersion = "nightly-$($Matches[1])"
                 Write-Info "  Recognized as dev build: $($Matches[1])"
                 break
             }
-            if ($input -match '^\d+\.\d+\.\d+') { $currentVersion = $input }
-            elseif ($input -match '\d{4}-\d{2}-\d{2}') {
+            if ($verInput -match '^\d+\.\d+\.\d+([-_](beta|rc|pre)[-_]?\d*)?$') { $currentVersion = $verInput }
+            elseif ($verInput -match '\d{4}-\d{2}-\d{2}') {
                 # Accept any format with a date in it as a nightly indicator
-                $dateMatch = [regex]::Match($input, '\d{4}-\d{2}-\d{2}').Value
+                $dateMatch = [regex]::Match($verInput, '\d{4}-\d{2}-\d{2}').Value
                 $currentVersion = "nightly-$dateMatch"
                 Write-Info "  Recognized as dev build: $dateMatch"
                 break
@@ -811,7 +811,7 @@ function Invoke-InteractiveSetup {
     # ========================================================================
     # Step 6: Config Patches
     # ========================================================================
-    Write-Header "Step 6/7: Config Patches"
+    Write-Header "Config Patches"
     Write-Info "Config patches let you toggle common settings (explosions, channels, etc.)"
     Write-Info "You can skip this and manage patches later via Settings > Config Patches."
     Write-Host ""
@@ -822,7 +822,7 @@ function Invoke-InteractiveSetup {
     # ========================================================================
     # Step 7: Summary and Save
     # ========================================================================
-    Write-Header "Step 7/7: Configuration Summary"
+    Write-Header "Configuration Summary"
 
     Show-CurrentConfig -Config $config
 

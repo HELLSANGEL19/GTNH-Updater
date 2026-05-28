@@ -118,14 +118,17 @@ function Find-JavaInstallations {
         $pathJava = Get-Command 'java' -ErrorAction SilentlyContinue
         if ($pathJava) {
             $resolved = $pathJava.Source
-            # Resolve symlinks on Linux
+            # Resolve symlinks on Linux (follow chain up to 10 levels)
             if ($IsLinux -and $resolved) {
                 try {
-                    $resolvedTarget = (Get-Item -LiteralPath $resolved).Target
-                    if ($resolvedTarget) { $resolved = $resolvedTarget }
+                    $maxHops = 10
+                    for ($hop = 0; $hop -lt $maxHops; $hop++) {
+                        $target = (Get-Item -LiteralPath $resolved).Target
+                        if ($target) { $resolved = $target } else { break }
+                    }
                 }
                 catch {
-                    # Keep original path
+                    # Keep whatever we resolved so far
                 }
             }
             if ($resolved -and (-not $found.ContainsKey($resolved))) {
@@ -367,6 +370,7 @@ function Find-ServerInstances {
 
         foreach ($drive in $drives) {
             $driveRoot = $drive.Root
+            Write-Host "`r  Scanning $driveRoot...          " -NoNewline -ForegroundColor DarkGray
 
             # Check common paths
             foreach ($subPath in $commonPaths) {
@@ -486,6 +490,8 @@ function Find-ServerInstances {
         }
     }
 
+    Write-Host "`r                                        " -NoNewline  # Clear progress line
+    Write-Host "`r" -NoNewline
     Write-Info "Found $($results.Count) GTNH server instance(s)."
     return $results
 }

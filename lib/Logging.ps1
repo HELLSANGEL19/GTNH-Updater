@@ -38,7 +38,7 @@ function Initialize-Logging {
     $psVer = $PSVersionTable.PSVersion.ToString()
     $osInfo = [System.Environment]::OSVersion.VersionString
 
-    $scriptDirRedacted = $scriptDir -replace '\\Users\\[^\\]+', '\Users\***' -replace '/Users/[^/]+', '/Users/***' -replace '/home/[^/]+', '/home/***'
+    $scriptDirRedacted = $scriptDir -replace '\\Users\\[^\\]+', '\Users\***' -replace '/Users/[^/]+', '/Users/***' -replace '/home/[^/]+', '/home/***' -replace '(?<=[A-Za-z]:/)Users/[^/]+', 'Users/***'
 
     $initMessage = @(
         "========================================"
@@ -90,7 +90,7 @@ function Write-Log {
     }
 
     $timestamp = Get-Date -Format 'HH:mm:ss'
-    # Redact usernames from paths before writing to log
-    $safeMessage = $Message -replace '\\Users\\[^\\]+', '\Users\***' -replace '/Users/[^/]+', '/Users/***' -replace '/home/[^/]+', '/home/***'
+    # Redact usernames from paths before writing to log (handles both slash directions)
+    $safeMessage = $Message -replace '\\Users\\[^\\]+', '\Users\***' -replace '/Users/[^/]+', '/Users/***' -replace '/home/[^/]+', '/home/***' -replace '(?<=[A-Za-z]:/)Users/[^/]+', 'Users/***'
     "${timestamp}  ${safeMessage}" | Out-File -FilePath $script:LogFile -Append -Encoding UTF8
 }

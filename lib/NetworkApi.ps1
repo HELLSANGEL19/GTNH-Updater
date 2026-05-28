@@ -17,9 +17,6 @@
 #   Invoke-FileDownload           - Download file with progress display (URL, size
 #                                    in MB, elapsed time), save to cache folder
 #   Test-FileIntegrity            - Verify SHA256 hash of a downloaded file
-#   Get-LatestNightlyUpdater      - Query nightly updater releases API, compare
-#                                    with tracked version, download if newer; fall
-#                                    back to existing local JAR on network failure
 #   Get-ScriptUpdateInfo          - Check for newer script version on GitHub
 #
 # All network operations wrapped in try/catch distinguishing connectivity
@@ -445,7 +442,7 @@ function Invoke-FileDownload {
 
                     $progressLine = "  [$bar] ${percent}%  ${downloadedMB}/${totalMB} MB${speedLabel}"
                     # Pad to fixed width to fully overwrite previous line content
-                    $progressLine = $progressLine.PadRight(78)
+                    $progressLine = $progressLine.PadRight((Get-TerminalWidth))
                     Write-Host "`r${progressLine}" -NoNewline -ForegroundColor Gray
                     $lastPercent = $percent
                 }
@@ -455,13 +452,13 @@ function Invoke-FileDownload {
                 $downloadedMB = [math]::Round($totalRead / 1MB, 1)
                 $speedMBs = [math]::Round(($speedBytes / 1MB) / ($speedTimer.ElapsedMilliseconds / 1000), 1)
                 $progressLine = "  Downloading... ${downloadedMB} MB  ${speedMBs} MB/s"
-                Write-Host "`r$($progressLine.PadRight(78))" -NoNewline -ForegroundColor Gray
+                Write-Host "`r$($progressLine.PadRight((Get-TerminalWidth)))" -NoNewline -ForegroundColor Gray
                 $speedBytes = 0
                 $speedTimer.Restart()
             }
         }
 
-        Write-Host "`r$(' ' * 80)" # Clear the progress bar line
+        Write-Host "`r$(' ' * (Get-TerminalWidth))" # Clear the progress bar line
         Write-Host ""
         $stopwatch.Stop()
 
@@ -494,7 +491,7 @@ function Invoke-FileDownload {
     }
     catch {
         # Clear progress bar line on error so it doesn't linger
-        Write-Host "`r$(' ' * 80)"
+        Write-Host "`r$(' ' * (Get-TerminalWidth))"
 
         $ex = $_.Exception
         if (Test-IsNetworkException $ex) {
@@ -802,144 +799,5 @@ function Get-ScriptUpdateInfo {
         DownloadUrl = $downloadUrl
         ReleaseUrl  = $release.html_url
         Body        = $release.body
-    }
-}
-
-
-
-function Get-LatestNightlyUpdater {
-    <#
-    .SYNOPSIS
-        Check for and download the latest gtnh-daily-updater binary.
-    .DESCRIPTION
-        Queries the gtnh-daily-updater GitHub releases API, compares with the
-        tracked version in config, downloads the platform-appropriate binary if
-        newer. Falls back to existing local binary on network failure.
-    .PARAMETER Config
-        The config PSCustomObject containing NightlyUpdaterVersion.
-    .OUTPUTS
-        Path to the gtnh-daily-updater binary, or $null if unavailable.
-    #>
-    param(
-        [Parameter(Mandatory)][PSCustomObject]$Config
-    )
-
-    $updaterDir = $script:NightlyUpdaterDir
-
-    if (-not (Test-Path -LiteralPath $updaterDir)) {
-        New-Item -Path $updaterDir -ItemType Directory -Force | Out-Null
-    }
-
-    # Determine platform-appropriate binary name
-    $binaryName = if ($IsWindows) { 'gtnh-daily-updater.exe' } else { 'gtnh-daily-updater' }
-
-    # Find existing local binary
-    $existingBinary = Join-Path $updaterDir $binaryName
-    $existingBinaryExists = Test-Path -LiteralPath $existingBinary
-
-    # Query GitHub for latest release
-    $release = Invoke-GitHubApi -Uri $script:NightlyUpdaterApi
-
-    if (-not $release) {
-        if ($existingBinaryExists) {
-            Write-Warn "Could not check for updater updates. Using existing binary."
-            return $existingBinary
-        }
-        Write-Err "Cannot download gtnh-daily-updater and no local copy exists."
-        return $null
-    }
-
-    $latestVersion = $release.tag_name
-    $currentVersion = $Config.NightlyUpdaterVersion ?? ''
-
-    if ($latestVersion -ne $currentVersion -or -not $existingBinaryExists) {
-        Write-Step "Updating daily updater: $currentVersion -> $latestVersion"
-
-        # Find the platform-appropriate asset
-        $osTag = if ($IsWindows) { 'windows' } elseif ($IsMacOS) { 'darwin' } else { 'linux' }
-        $archTag = if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq 'Arm64') { 'arm64' } else { 'amd64' }
-        $assetPattern = "${osTag}.*${archTag}|${archTag}.*${osTag}"
-        $asset = $release.assets | Where-Object { $_.name -match $assetPattern } | Select-Object -First 1
-
-        # Fallback: any asset matching the OS
-        if (-not $asset) {
-            $asset = $release.assets | Where-Object { $_.name -match $osTag } | Select-Object -First 1
-        }
-
-        if (-not $asset) {
-            Write-Warn "No binary asset found for $osTag/$archTag in release $latestVersion."
-            if ($existingBinaryExists) { return $existingBinary }
-            return $null
-        }
-
-        $downloadPath = Join-Path $updaterDir $asset.name
-        $downloaded = Invoke-FileDownload -Url $asset.browser_download_url -OutPath $downloadPath -Description 'daily updater binary'
-
-        if ($downloaded) {
-            # Extract the zip to get the binary
-            try {
-                Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
-                $extractDir = Join-Path $updaterDir 'extract-tmp'
-                if (Test-Path -LiteralPath $extractDir) { Remove-Item -LiteralPath $extractDir -Recurse -Force }
-                # Unblock the zip before extraction to prevent Zone.Identifier propagation
-                if ($IsWindows) {
-                    try { Unblock-File -LiteralPath $downloadPath -ErrorAction SilentlyContinue } catch {}
-                }
-                [System.IO.Compression.ZipFile]::ExtractToDirectory($downloadPath, $extractDir)
-                # Find the binary in the extracted folder
-                $extractedBinary = Get-ChildItem -LiteralPath $extractDir -Filter $binaryName -Recurse | Select-Object -First 1
-                if ($extractedBinary) {
-                    if (Test-Path -LiteralPath $existingBinary) { Remove-Item -LiteralPath $existingBinary -Force }
-                    Move-Item -LiteralPath $extractedBinary.FullName -Destination $existingBinary -Force
-                    # Unblock the file and create an external manifest to prevent
-                    # Windows from requiring elevation (SmartScreen heuristic detection
-                    # flags exe names containing "update"/"install"/"setup")
-                    if ($IsWindows) {
-                        try { Unblock-File -LiteralPath $existingBinary -ErrorAction SilentlyContinue } catch {}
-                        # External manifest tells Windows this exe does NOT need elevation
-                        $manifestPath = "${existingBinary}.manifest"
-                        $manifestContent = @'
-<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
-  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
-    <security>
-      <requestedPrivileges>
-        <requestedExecutionLevel level="asInvoker" uiAccess="false"/>
-      </requestedPrivileges>
-    </security>
-  </trustInfo>
-</assembly>
-'@
-                        try { Set-Content -LiteralPath $manifestPath -Value $manifestContent -Encoding UTF8 -Force } catch {}
-                    }
-                }
-                Remove-Item -LiteralPath $extractDir -Recurse -Force -ErrorAction SilentlyContinue
-                Remove-Item -LiteralPath $downloadPath -Force -ErrorAction SilentlyContinue
-            }
-            catch {
-                Write-Warn "Could not extract binary: $($_.Exception.Message)"
-                if ($existingBinaryExists) { return $existingBinary }
-                return $null
-            }
-            # Make executable on Linux/Mac
-            if (-not $IsWindows) {
-                try { & chmod +x $existingBinary } catch {}
-            }
-            $Config.NightlyUpdaterVersion = $latestVersion
-            Save-Config -Config $Config
-            return $existingBinary
-        }
-        else {
-            if ($existingBinaryExists) {
-                Write-Warn "Download failed. Using existing binary."
-                return $existingBinary
-            }
-            Write-Err "Failed to download daily updater and no local copy exists."
-            return $null
-        }
-    }
-    else {
-        Write-Info "Daily updater is up to date ($latestVersion)."
-        return $existingBinary
     }
 }

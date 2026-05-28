@@ -1,25 +1,40 @@
 # Changelog
 
-## [0.4.6-beta] - 2026-05-21
+## [0.5.0-beta] - 2026-05-27
 
 ### Added
 
-* Backups now stored as compressed .zip files — significantly smaller on disk than raw folder copies
-* Rollback snapshots now persist until the next update — allows rollback even if the game crashes after a successful update
-* "Rollback last update" option in Settings > Backups and Cache — restores mods/config/scripts to pre-update state
-* Backup progress bar with ETA matching the style used for mod downloads
-* Backup integrity verification (warns if backup appears incomplete)
-* Internal directories (logs, crash-reports, cache, .temp, backups) always excluded from backups
-* Already-compressed files (.jar, .zip, .png, .ogg, etc.) stored without re-compression for speed
+* Compressed .zip backups — significantly smaller on disk
+* Mod integrity verification — detects corrupted mods and re-downloads them automatically
+* Automatic duplicate mod cleanup — catches renamed mods across updates
+* Rollback snapshots persist until the next update — rollback even after closing the updater
+* "Rollback last update" in Settings > Backups and Cache
+* "Force clean sync" in Settings > Advanced — re-downloads everything from scratch
+* Custom mod stash — your custom mods survive even if you manually replace the mods folder
+* "Apply patches now" in Config Patches menu — for configs generated after first launch
 * Delete individual backups from the Manage Backups menu
+
+### Improved
+
+* Cleaner update flow — phase-based layout with clear visual sections instead of a wall of text
+* Mod summary now reads "12 added, 3 removed, 8 updated" instead of cryptic symbols
+* Settings menu consolidated (profiles, export/import, wizard moved to Advanced submenu)
+* Config Patches menu reorganized with visual grouping
+* Progress feedback during mod verification, file deletion, and config extraction
+* Smarter duplicate detection — no more false positives on mods like BetterFPS or Compass
+* Custom mod preservation works across version bumps and manual folder replacements
+* Setup wizard no longer shows confusing "Step 3/7" → "Step 5/7" when steps are skipped
 
 ### Fixed
 
-* Server backups now only back up the server folder itself, not the entire parent directory (previously could back up 100 unrelated server folders if they shared a parent)
-* Backup no longer fails on the `.gtnh-updater.lock` file (held open by the running process)
-* Backup excludes rollback snapshot directories and the updater's own folder when inside the backup source
-* Fixed `-or` parsing error in backup safety check that crashed when source had >10 subdirectories
-* Restoring old-format server backups (created before 0.4.6) is detected automatically and handled correctly
+* JourneyMap waypoints no longer lost on nightly updates
+* Progress bar no longer shows wrong count (18419/18125) or gets stuck on screen
+* Preserved files (JourneyMap, NEI, servers.dat) no longer lost if update fails mid-way
+* Backup no longer fails on locked files or when backup folder is inside the instance
+* Force clean sync cancel button actually cancels
+* Downloads validated as real files (rejects HTML error pages from GitHub)
+* Update state always saved even if verification or config patches fail
+* Various other bug fixes and stability improvements
 
 ## [0.4.5-beta] - 2026-05-19
 

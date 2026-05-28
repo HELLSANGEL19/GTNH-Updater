@@ -124,7 +124,9 @@ function Invoke-FullInstanceBackup {
             }
             $instanceSizeGB = [math]::Round($bytes / 1GB, 2)
             Write-Host "`r  Instance size: ~${instanceSizeGB} GB                    " -ForegroundColor Gray
-        } catch {}
+        } catch {
+            Write-Host "`r$(' ' * (Get-TerminalWidth))`r" -NoNewline
+        }
     }
 
     # Check free space on backup drive
@@ -174,8 +176,10 @@ function Invoke-FullInstanceBackup {
     $backupZipName  = "${backupName}.zip"
     $backupPath     = Join-Path $backupDir $backupZipName
 
-    Write-Step "Creating backup: $backupZipName"
-    Write-Info "  Source: $backupSourceDir"
+    if (-not $Silent) {
+        Write-Phase "Backup"
+        Write-Info "$backupZipName"
+    }
 
     try {
         # ── Build exclusion list ──────────────────────────────────────────────
@@ -236,7 +240,7 @@ function Invoke-FullInstanceBackup {
         $allFiles = Get-ChildItem -LiteralPath $backupSourceDir -Recurse -File -ErrorAction SilentlyContinue
         $totalFiles = @($allFiles).Count
         if (-not $Silent) {
-            Write-Host "`r  Compressing $totalFiles files...                    " -ForegroundColor Gray
+            Write-Host "`r$(' ' * (Get-TerminalWidth))`r" -NoNewline
         }
 
         # Create zip with Fastest compression
@@ -297,19 +301,22 @@ function Invoke-FullInstanceBackup {
                     }
                 }
                 $progressLine = "  [$bar] ${percent}%  ${fileCount}/${totalFiles}${eta}"
-                Write-Host "`r$($progressLine.PadRight(80))" -NoNewline -ForegroundColor Gray
+                Write-Host "`r$($progressLine.PadRight((Get-TerminalWidth)))" -NoNewline -ForegroundColor Gray
             }
         }
 
         $zip.Dispose()
+        $zip = $null
         $zipStream.Dispose()
+        $zipStream = $null
 
         $stopwatch.Stop()
         $elapsed = [math]::Round($stopwatch.Elapsed.TotalSeconds, 1)
 
         if (-not $Silent) {
             $finalBar = "  [$(('█' * 50))] 100%  ${fileCount}/${totalFiles}  ${elapsed}s"
-            Write-Host "`r$($finalBar.PadRight(80))" -ForegroundColor Gray
+            Write-Host "`r$(' ' * (Get-TerminalWidth))" -NoNewline
+            Write-Host "`r$finalBar" -ForegroundColor Gray
         }
 
         # ── Summary ───────────────────────────────────────────────────────────
@@ -318,11 +325,7 @@ function Invoke-FullInstanceBackup {
                      elseif ($zipSizeBytes -ge 1MB) { "$([math]::Round($zipSizeBytes / 1MB, 0)) MB" }
                      else { "$([math]::Round($zipSizeBytes / 1KB, 0)) KB" }
 
-        Write-Success "Backup complete: $backupZipName"
-        Write-Info "  Size: $sizeLabel | Files: $fileCount | Time: ${elapsed}s"
-        if ($actualInternalExcludes.Count -gt 0) {
-            Write-Info "  Excluded: $($actualInternalExcludes -join ', ')"
-        }
+        Write-Success "Backup complete: $sizeLabel, $fileCount files, ${elapsed}s"
         Write-Log "[BACKUP] Created: $backupPath ($sizeLabel, $fileCount files, ${elapsed}s)"
 
         # Quick sanity check
@@ -342,20 +345,24 @@ function Invoke-FullInstanceBackup {
         $oldFolders = Get-ChildItem -LiteralPath $backupDir -Directory -Filter "gtnh-full-${Target}-*" |
             Sort-Object Name | Select-Object -SkipLast $retention
         foreach ($old in $oldFolders) {
-            try { Remove-Item -LiteralPath $old.FullName -Recurse -Force; Write-Log "[BACKUP] Pruned legacy: $($old.Name)" } catch {}
+            try { $oldProgress = $ProgressPreference; $ProgressPreference = 'SilentlyContinue'; Remove-Item -LiteralPath $old.FullName -Recurse -Force; $ProgressPreference = $oldProgress; Write-Log "[BACKUP] Pruned legacy: $($old.Name)" } catch { $ProgressPreference = $oldProgress }
         }
 
         return $true
     }
     catch {
+        # Clear any lingering progress bar
+        if (-not $Silent) { Write-Host "`r$(' ' * (Get-TerminalWidth))`r" -NoNewline }
         Write-Err "Backup failed: $($_.Exception.Message)"
         Write-Log "[ERROR] Full backup failed: $($_.Exception.ToString())"
-        try { if ($zip) { $zip.Dispose() } } catch {}
-        try { if ($zipStream) { $zipStream.Dispose() } } catch {}
         if (Test-Path -LiteralPath $backupPath) {
             try { Remove-Item -LiteralPath $backupPath -Force } catch {}
         }
         return $false
+    }
+    finally {
+        if ($zip) { try { $zip.Dispose() } catch {} }
+        if ($zipStream) { try { $zipStream.Dispose() } catch {} }
     }
 }
 
@@ -383,7 +390,8 @@ function Invoke-RestoreBackup {
         return $false
     }
 
-    Write-Step "Restoring from: $(Split-Path -Leaf $BackupPath)"
+    Write-Phase "Restore"
+    Write-Info "$(Split-Path -Leaf $BackupPath)"
 
     try {
         $items = Get-ChildItem -LiteralPath $BackupPath
@@ -393,7 +401,9 @@ function Invoke-RestoreBackup {
 
             # Remove existing at destination
             if (Test-Path -LiteralPath $destPath) {
+                $oldProgress = $ProgressPreference; $ProgressPreference = 'SilentlyContinue'
                 Remove-Item -LiteralPath $destPath -Recurse -Force
+                $ProgressPreference = $oldProgress
             }
 
             # Copy from backup
@@ -460,7 +470,9 @@ function Invoke-BackupCleanup {
         $toDelete = $folderBackups | Select-Object -First ($folderBackups.Count - $retention)
         foreach ($old in $toDelete) {
             try {
+                $oldProgress = $ProgressPreference; $ProgressPreference = 'SilentlyContinue'
                 Remove-Item -LiteralPath $old.FullName -Recurse -Force
+                $ProgressPreference = $oldProgress
                 Write-Info "  Cleaned old backup: $($old.Name)"
                 Write-Log "[BACKUP] Deleted old: $($old.FullName)"
             }
@@ -585,7 +597,7 @@ function Invoke-BackupMenu {
                     if (Confirm-Action "Restore this backup?") {
                         if ($isZipBackup) {
                             # Extract zip to restore path (overwrites existing files)
-                            Write-Step "Extracting backup..."
+                            Write-Phase "Restore"
                             $zip = $null
                             try {
                                 Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
@@ -615,12 +627,13 @@ function Invoke-BackupMenu {
                                         $pct = [math]::Floor(($entryCount / $totalEntries) * 100)
                                         $bar = ('█' * [math]::Floor($pct / 2)).PadRight(50, '░')
                                         $progressLine = "  [$bar] ${pct}%  ${entryCount}/${totalEntries}"
-                                        Write-Host "`r$($progressLine.PadRight(80))" -NoNewline -ForegroundColor Gray
+                                        Write-Host "`r$($progressLine.PadRight((Get-TerminalWidth)))" -NoNewline -ForegroundColor Gray
                                     }
                                 }
                                 if ($totalEntries -gt 200) {
+                                    Write-Host "`r$(' ' * (Get-TerminalWidth))" -NoNewline
                                     $finalLine = "  [$(('█' * 50))] 100%  ${entryCount}/${totalEntries}"
-                                    Write-Host "`r$($finalLine.PadRight(80))" -ForegroundColor Gray
+                                    Write-Host "`r$finalLine" -ForegroundColor Gray
                                 }
                                 Write-Success "Restore complete ($entryCount files extracted)."
                                 
@@ -695,7 +708,9 @@ function Invoke-BackupMenu {
                     if (Confirm-Action "Delete $($selectedBackup.Name)?") {
                         try {
                             if ($selectedBackup.PSIsContainer) {
+                                $oldProgress = $ProgressPreference; $ProgressPreference = 'SilentlyContinue'
                                 Remove-Item -LiteralPath $selectedBackup.FullName -Recurse -Force
+                                $ProgressPreference = $oldProgress
                             } else {
                                 Remove-Item -LiteralPath $selectedBackup.FullName -Force
                             }
@@ -760,12 +775,12 @@ function Save-RollbackSnapshot {
 
     # Clean any previous rollback snapshot
     if (Test-Path -LiteralPath $rollbackDir) {
-        try { Remove-Item -LiteralPath $rollbackDir -Recurse -Force } catch {}
+        try { $oldProgress = $ProgressPreference; $ProgressPreference = 'SilentlyContinue'; Remove-Item -LiteralPath $rollbackDir -Recurse -Force; $ProgressPreference = $oldProgress } catch { $ProgressPreference = $oldProgress }
     }
 
     New-Item -Path $rollbackDir -ItemType Directory -Force | Out-Null
 
-    Write-Step "Saving rollback snapshot..."
+    Write-Dots "Saving rollback snapshot"
 
     $foldersToSnapshot = $Target -eq 'server' ? $script:ServerFoldersToDelete : $script:ClientFoldersToDelete
 
@@ -807,11 +822,12 @@ function Save-RollbackSnapshot {
             }
         }
 
-        Write-Success "Rollback snapshot saved ($snapshotCount items)"
+        Complete-Dots "$snapshotCount items"
         Write-Log "[ROLLBACK] Snapshot saved to: $rollbackDir"
         return $rollbackDir
     }
     catch {
+        Complete-Dots "failed" -Color Red
         Write-Err "Failed to save rollback snapshot: $($_.Exception.Message)"
         Write-Log "[ERROR] Rollback snapshot failed: $($_.Exception.ToString())"
         return $null
@@ -846,7 +862,7 @@ function Invoke-RollbackFromSnapshot {
         return $false
     }
 
-    Write-Step "Rolling back from snapshot..."
+    Write-Phase "Rollback"
 
     try {
         $foldersToRestore = $Target -eq 'server' ? $script:ServerFoldersToDelete : $script:ClientFoldersToDelete
@@ -856,7 +872,7 @@ function Invoke-RollbackFromSnapshot {
             if (Test-Path -LiteralPath $sourcePath) {
                 $destPath = Join-Path $InstancePath $folder
                 if (Test-Path -LiteralPath $destPath) {
-                    Remove-Item -LiteralPath $destPath -Recurse -Force
+                    try { $oldProgress = $ProgressPreference; $ProgressPreference = 'SilentlyContinue'; Remove-Item -LiteralPath $destPath -Recurse -Force; $ProgressPreference = $oldProgress } catch { $ProgressPreference = $oldProgress; throw }
                 }
                 Copy-Item -LiteralPath $sourcePath -Destination $destPath -Recurse -Force
                 Write-Info "  Restored: $folder/"
@@ -879,7 +895,7 @@ function Invoke-RollbackFromSnapshot {
                 if (Test-Path -LiteralPath $sourcePath) {
                     $destPath = Join-Path $instanceRoot $item
                     if (Test-Path -LiteralPath $destPath) {
-                        Remove-Item -LiteralPath $destPath -Recurse -Force
+                        try { $oldProgress = $ProgressPreference; $ProgressPreference = 'SilentlyContinue'; Remove-Item -LiteralPath $destPath -Recurse -Force; $ProgressPreference = $oldProgress } catch { $ProgressPreference = $oldProgress; throw }
                     }
                     Copy-Item -LiteralPath $sourcePath -Destination $destPath -Recurse -Force
                     Write-Info "  Restored (instance root): $item"

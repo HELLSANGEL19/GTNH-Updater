@@ -111,14 +111,15 @@ function Invoke-NightlyUpdate {
     if (-not $instanceRunning -and $Target -eq 'server') {
         $sessionLock = Join-Path $instancePath 'world' 'session.lock'
         if (Test-Path -LiteralPath $sessionLock) {
+            $stream = $null
             try {
                 $stream = [System.IO.File]::Open($sessionLock, 'Open', 'ReadWrite', 'None')
-                $stream.Close()
-                $stream.Dispose()
                 Write-Log "[NIGHTLY] session.lock opened exclusively - server is NOT running"
             } catch {
                 $instanceRunning = $true
                 Write-Log "[NIGHTLY] session.lock is locked - server appears to be running"
+            } finally {
+                if ($stream) { try { $stream.Dispose() } catch {} }
             }
         }
 
@@ -127,13 +128,13 @@ function Invoke-NightlyUpdate {
         if (-not $instanceRunning -and (Test-Path -LiteralPath $pidFile)) {
             $pidContent = Get-Content -LiteralPath $pidFile -Raw -ErrorAction SilentlyContinue
             if ($pidContent) {
-                $pid = $pidContent.Trim() -as [int]
-                if ($null -ne $pid) {
+                $serverPid = $pidContent.Trim() -as [int]
+                if ($null -ne $serverPid) {
                     try {
-                        $proc = Get-Process -Id $pid -ErrorAction SilentlyContinue
+                        $proc = Get-Process -Id $serverPid -ErrorAction SilentlyContinue
                         if ($proc -and $proc.ProcessName -match 'java') {
                             $instanceRunning = $true
-                            Write-Log "[NIGHTLY] server.pid points to running java process (PID $pid)"
+                            Write-Log "[NIGHTLY] server.pid points to running java process (PID $serverPid)"
                         }
                     } catch {}
                 }
@@ -156,13 +157,15 @@ function Invoke-NightlyUpdate {
     Write-Header "$($Channel.ToUpper()) Update - $($Target.ToUpper())"
 
     # ── Step 1: Fetch manifest ────────────────────────────────────────────────
-    Write-Step "Fetching $Channel manifest..."
+    Write-Dots "Fetching $Channel manifest"
 
     $manifest = Get-NightlyManifest -Channel $Channel
     if (-not $manifest) {
+        Complete-Dots "failed" -Color Red
         Write-Err "Could not fetch $Channel manifest. Check your internet connection."
         return
     }
+    Complete-Dots "ok"
 
     $configTag = $manifest.config
     if (-not $configTag) {
@@ -178,12 +181,9 @@ function Invoke-NightlyUpdate {
     $githubModCount = @($manifest.github_mods.PSObject.Properties).Count
     $externalModCount = if ($manifest.external_mods) { @($manifest.external_mods.PSObject.Properties).Count } else { 0 }
     $totalModCount = $githubModCount + $externalModCount
-    Write-Success "Manifest loaded: $totalModCount mods, config: $configTag"
-    Write-Host ""
+    Write-Success "$totalModCount mods, config: $configTag"
 
     # ── Step 2: Get release info ──────────────────────────────────────────────
-    Write-Step "Checking release info..."
-
     $releaseInfo = Get-NightlyReleaseInfo -ConfigTag $configTag
     $versionLabel = $configTag
 
@@ -286,12 +286,26 @@ function Invoke-NightlyUpdate {
     }
 
     # "Already on this version" check - only if we haven't detected a state mismatch
+    # Compute mod diff early to detect if mods have actually changed (manifest can update
+    # mod versions without changing the config tag)
+    $precomputedDiff = $null
+    if (-not $isTransition) {
+        $precomputedDiff = Compare-ModsWithManifest -Manifest $manifest -InstancePath $instancePath `
+            -Target $Target -State $state -Config $Config
+    }
+
     if (-not $isTransition -and $currentVersion -eq $versionLabel) {
-        Write-Info "Already on $versionLabel."
-        Write-Host ""
-        if (-not (Confirm-Action "Re-apply this version anyway? (will re-download changed mods)")) {
-            Write-Info "Update skipped."
-            return
+        # Check if there are actual mod changes despite same config tag
+        $hasModChanges = $precomputedDiff -and ($precomputedDiff.ToDownload.Count -gt 0 -or $precomputedDiff.ToRemove.Count -gt 0)
+        if (-not $hasModChanges) {
+            Write-Info "Already up to date ($versionLabel). No mod changes detected."
+            Write-Host ""
+            if (-not (Confirm-Action "Re-apply anyway?")) {
+                Write-Info "Update skipped."
+                return
+            }
+        } else {
+            Write-Info "$($precomputedDiff.ToDownload.Count) mod update(s) available."
         }
     }
 
@@ -316,12 +330,7 @@ function Invoke-NightlyUpdate {
         }
     }
 
-    # Compute the mod diff early so we can show it in the plan (skip for transitions -- everything is new)
-    $precomputedDiff = $null
-    if (-not $isTransition) {
-        $precomputedDiff = Compare-ModsWithManifest -Manifest $manifest -InstancePath $instancePath `
-            -Target $Target -State $state -Config $Config
-    }
+    # precomputedDiff was already computed above (before the version check)
 
     # ── Stale custom mod detection ────────────────────────────────────────────
     # Check if any custom mods in config no longer exist on disk (removed manually, etc.)
@@ -451,11 +460,18 @@ function Invoke-NightlyUpdate {
         Write-Log "[NIGHTLY] Disk space check failed (non-fatal): $($_.Exception.Message)"
     }
 
-    Write-Step "Saving rollback snapshot..."
+    # ── Step 5b: Preserve user files ─────────────────────────────────────────
+    # MUST happen BEFORE the snapshot moves config/ out
+    $preserveTempDir = Join-Path $script:TempDir "preserved-nightly-${Target}"
+    Invoke-PreserveFiles -InstancePath $instancePath -Target $Target -TempDir $preserveTempDir
+
+    Write-Phase "Snapshot"
     $nightlyFoldersToSnapshot = @('mods', 'config', 'resources', 'scripts')
     $nightlyRollbackDir = Join-Path (Split-Path -Parent $instancePath) ".gtnh-rollback-nightly-${Target}"
     if (Test-Path -LiteralPath $nightlyRollbackDir) {
+        $oldProgress = $ProgressPreference; $ProgressPreference = 'SilentlyContinue'
         Remove-Item -LiteralPath $nightlyRollbackDir -Recurse -Force -ErrorAction SilentlyContinue
+        $ProgressPreference = $oldProgress
     }
     New-Item -Path $nightlyRollbackDir -ItemType Directory -Force | Out-Null
 
@@ -519,11 +535,7 @@ function Invoke-NightlyUpdate {
         }
     }
 
-    # ── Step 6: Preserve user files ──────────────────────────────────────────
-    # MUST happen before transition wipe (Step 7) so config/ files are still there
-    Write-Step "Preserving user files..."
-    $preserveTempDir = Join-Path $script:TempDir "preserved-nightly-${Target}"
-    Invoke-PreserveFiles -InstancePath $instancePath -Target $Target -TempDir $preserveTempDir
+    # ── Step 6: (preserve already done above before snapshot) ───────────────
 
     # ── Step 7: Handle stable-to-nightly transition ─────────────────────────────
     if ($isTransition) {
@@ -534,17 +546,74 @@ function Invoke-NightlyUpdate {
         $configDir = Join-Path $instancePath 'config'
         $scriptsDir = Join-Path $instancePath 'scripts'
 
-        # Save custom mods to temp BEFORE wiping (don't rely on rollback snapshot)
+        # Save custom mods to temp BEFORE wiping
+        # Checks: 1) exact file on disk, 2) base name match on disk, 3) persistent stash
+        # The stash survives manual mods folder replacements (zip copies, etc.)
         $customMods = $Target -eq 'server' ? ($Config.CustomServerMods ?? @()) : ($Config.CustomClientMods ?? @())
         $customModTempDir = Join-Path $script:TempDir "custom-mods-nightly-${Target}"
-        if ($customMods.Count -gt 0 -and (Test-Path -LiteralPath $modsDir)) {
+        $customModStashDir = Join-Path (Split-Path -Parent $instancePath) ".gtnh-custom-mods-${Target}"
+        $missingCustomMods = @()
+        if ($customMods.Count -gt 0) {
             New-Item -Path $customModTempDir -ItemType Directory -Force | Out-Null
             foreach ($customMod in $customMods) {
-                $customPath = Join-Path $modsDir $customMod
-                if (Test-Path -LiteralPath $customPath) {
-                    Copy-Item -LiteralPath $customPath -Destination (Join-Path $customModTempDir $customMod) -Force
+                $saved = $false
+
+                # Try 1: exact file on disk
+                if (-not $saved -and (Test-Path -LiteralPath $modsDir)) {
+                    $customPath = Join-Path $modsDir $customMod
+                    if (Test-Path -LiteralPath $customPath) {
+                        Copy-Item -LiteralPath $customPath -Destination (Join-Path $customModTempDir $customMod) -Force
+                        $saved = $true
+                    }
+                }
+
+                # Try 2: base name match on disk (handles version bumps)
+                if (-not $saved -and (Test-Path -LiteralPath $modsDir)) {
+                    $customBase = Get-ModBaseName -FileName $customMod
+                    $baseMatch = Get-ChildItem -LiteralPath $modsDir -Filter '*.jar' -File -ErrorAction SilentlyContinue |
+                        Where-Object { (Get-ModBaseName -FileName $_.Name) -eq $customBase } | Select-Object -First 1
+                    if ($baseMatch) {
+                        Copy-Item -LiteralPath $baseMatch.FullName -Destination (Join-Path $customModTempDir $baseMatch.Name) -Force
+                        Write-Log "[NIGHTLY] Custom mod '$customMod' matched by base name: $($baseMatch.Name)"
+                        $saved = $true
+                    }
+                }
+
+                # Try 3: persistent stash (survives manual mods folder replacements)
+                if (-not $saved -and (Test-Path -LiteralPath $customModStashDir)) {
+                    # Exact match in stash
+                    $stashPath = Join-Path $customModStashDir $customMod
+                    if (Test-Path -LiteralPath $stashPath) {
+                        Copy-Item -LiteralPath $stashPath -Destination (Join-Path $customModTempDir $customMod) -Force
+                        Write-Log "[NIGHTLY] Custom mod '$customMod' restored from stash"
+                        $saved = $true
+                    } else {
+                        # Base name match in stash
+                        $customBase = Get-ModBaseName -FileName $customMod
+                        $stashMatch = Get-ChildItem -LiteralPath $customModStashDir -Filter '*.jar' -File -ErrorAction SilentlyContinue |
+                            Where-Object { (Get-ModBaseName -FileName $_.Name) -eq $customBase } | Select-Object -First 1
+                        if ($stashMatch) {
+                            Copy-Item -LiteralPath $stashMatch.FullName -Destination (Join-Path $customModTempDir $stashMatch.Name) -Force
+                            Write-Log "[NIGHTLY] Custom mod '$customMod' matched from stash: $($stashMatch.Name)"
+                            $saved = $true
+                        }
+                    }
+                }
+
+                if (-not $saved) {
+                    $missingCustomMods += $customMod
+                    Write-Log "[NIGHTLY] Custom mod '$customMod' not found (disk, base name, or stash)"
                 }
             }
+        }
+
+        if ($missingCustomMods.Count -gt 0) {
+            Write-Warn "$($missingCustomMods.Count) custom mod(s) could not be found:"
+            foreach ($mm in $missingCustomMods) {
+                Write-Info "  - $mm"
+            }
+            Write-Info "Re-add these after the update via Settings > Custom Mods."
+            Write-Host ""
         }
 
         if (Test-Path -LiteralPath $modsDir) {
@@ -597,14 +666,45 @@ function Invoke-NightlyUpdate {
                 }
                 Write-Info "Remove these from Settings > Custom Mods if you want the pack version."
             }
+
+            # Update config's custom mods list to match actual restored filenames
+            # (handles version bumps where base name matched but filename changed)
+            # Missing mods are removed from the list — user was already warned above
+            $restoredFiles = @(Get-ChildItem -LiteralPath $customModTempDir -Filter '*.jar' -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -notin $skippedConflicts } | ForEach-Object { $_.Name })
+            if ($restoredFiles.Count -gt 0 -or $missingCustomMods.Count -gt 0) {
+                $updatedList = @($restoredFiles)
+                if ($Target -eq 'server') { $Config.CustomServerMods = $updatedList }
+                else { $Config.CustomClientMods = $updatedList }
+                Save-Config -Config $Config
+                if ($missingCustomMods.Count -gt 0) {
+                    Write-Log "[NIGHTLY] Removed $($missingCustomMods.Count) missing custom mod(s) from config: $($missingCustomMods -join ', ')"
+                }
+
+                # Update persistent stash with the restored files (for future transitions)
+                New-Item -Path $customModStashDir -ItemType Directory -Force | Out-Null
+                # Clear old stash contents and replace with current custom mods
+                Get-ChildItem -LiteralPath $customModStashDir -Filter '*.jar' -File -ErrorAction SilentlyContinue |
+                    Remove-Item -Force -ErrorAction SilentlyContinue
+                foreach ($rf in $restoredFiles) {
+                    $srcPath = Join-Path $customModTempDir $rf
+                    if (Test-Path -LiteralPath $srcPath) {
+                        Copy-Item -LiteralPath $srcPath -Destination (Join-Path $customModStashDir $rf) -Force
+                    }
+                }
+                Write-Log "[NIGHTLY] Updated custom mod stash with $($restoredFiles.Count) file(s)"
+            }
+
+            $oldProgress = $ProgressPreference; $ProgressPreference = 'SilentlyContinue'
             Remove-Item -LiteralPath $customModTempDir -Recurse -Force -ErrorAction SilentlyContinue
+            $ProgressPreference = $oldProgress
         }
 
         Write-Success "Cleared for fresh $Channel install."
     }
 
     # ── Step 8: Sync mods ─────────────────────────────────────────────────────
-    Write-Step "Syncing mods..."
+    Write-Phase "Mods"
 
     $modSyncResult = Invoke-NightlyModSync -Manifest $manifest -InstancePath $instancePath `
         -Target $Target -State $state -Config $Config -PrecomputedDiff $precomputedDiff
@@ -614,12 +714,13 @@ function Invoke-NightlyUpdate {
         Invoke-NightlyRollback -RollbackDir $nightlyRollbackDir -InstancePath $instancePath `
             -FoldersToSnapshot $nightlyFoldersToSnapshot
         Remove-TempDir $nightlyRollbackDir
+        Invoke-RestoreFiles -InstancePath $instancePath -Target $Target -TempDir $preserveTempDir
         Remove-TempDir $preserveTempDir
         return
     }
 
     # ── Step 9: Sync configs ──────────────────────────────────────────────────
-    Write-Step "Syncing configs..."
+    Write-Phase "Config"
 
     $configSyncOk = Invoke-NightlyConfigSync -ConfigTag $configTag -InstancePath $instancePath `
         -ReleaseInfo $releaseInfo -Manifest $manifest
@@ -632,6 +733,7 @@ function Invoke-NightlyUpdate {
             Invoke-NightlyRollback -RollbackDir $nightlyRollbackDir -InstancePath $instancePath `
                 -FoldersToSnapshot $nightlyFoldersToSnapshot
             Remove-TempDir $nightlyRollbackDir
+            Invoke-RestoreFiles -InstancePath $instancePath -Target $Target -TempDir $preserveTempDir
             Remove-TempDir $preserveTempDir
             return
         }
@@ -645,7 +747,6 @@ function Invoke-NightlyUpdate {
     # actually on disk (case-insensitive) and only downloads what's truly missing.
     if ($manifest.external_mods) {
         $modsDir = Join-Path $instancePath 'mods'
-        Write-Step "Checking external mods..."
 
         # Build a case-insensitive lookup of all jars currently in mods/ (includes
         # anything placed by config sync in Step 9)
@@ -777,11 +878,11 @@ function Invoke-NightlyUpdate {
                     $extProgress++
                     $percent = [math]::Floor(($extProgress / $extTotal) * 100)
                     $bar = ('█' * [math]::Floor($percent / 2)).PadRight(50, '░')
-                    Write-Host "`r$("  [$bar] ${percent}%  ${extProgress}/${extTotal} external mods".PadRight(80))" -NoNewline -ForegroundColor Gray
+                    Write-Host "`r$("  [$bar] ${percent}%  ${extProgress}/${extTotal} external mods".PadRight((Get-TerminalWidth)))" -NoNewline -ForegroundColor Gray
                 }
 
                 # Clear progress line
-                Write-Host "`r$(' ' * 85)`r" -NoNewline
+                Write-Host "`r$(' ' * (Get-TerminalWidth))`r" -NoNewline
                 Write-Host ""
 
                 if ($extDownloaded -gt 0) {
@@ -833,21 +934,252 @@ function Invoke-NightlyUpdate {
         Write-Log "[NIGHTLY] ManifestMods now includes $($modSyncResult.InstalledMods.Count) mods (with externals)"
     }
 
+    # ── Duplicate mod cleanup ─────────────────────────────────────────────────
+    # Runs AFTER all mods are in place (Maven downloads + config sync externals).
+    # Catches mods with different naming conventions that the filename-based removal missed.
+    # Uses aggressive fuzzy normalization to match across naming convention changes:
+    #   StevesFactoryManager vs Steve-s-Factory-Manager → stevesfactorymanager
+    #   sleepingbag vs SleepingBags → sleepingbag (strips trailing 's')
+    #   salisarcana vs Salis-Arcana → salisarcana
+    # Protected: custom mods and override mods are never removed.
+    $modsDir = Join-Path $instancePath 'mods'
+    if (Test-Path -LiteralPath $modsDir) {
+        $customModsList = @($Target -eq 'server' ? ($Config.CustomServerMods ?? @()) : ($Config.CustomClientMods ?? @()))
+        $overrideModsList = @($Target -eq 'server' ? ($Config.OverrideServerMods ?? @()) : ($Config.OverrideClientMods ?? @()))
+
+        # Fuzzy normalization function: strips all separators, possessives, and trailing plural 's'
+        $fuzzyNormalize = {
+            param([string]$baseName)
+            # Remove possessive patterns: 's, -s- (Steve's → Steves, Steve-s- → Steves)
+            $n = $baseName -replace "['']s\b", 's'
+            $n = $n -replace '-s-', 's'
+            # Strip all separators: spaces, hyphens, underscores, dots, plus signs
+            $n = ($n -replace '[\s\-_\.+]', '').ToLower()
+            # Strip trailing 's' for plural normalization (SleepingBags → sleepingbag)
+            # Only strip if not part of the word itself (avoid mangling compass, betterfps, etc.)
+            if ($n.Length -gt 5 -and $n.EndsWith('s') -and $n -notmatch '(ss|ps|ns|us|is|as)$') {
+                $n = $n.Substring(0, $n.Length - 1)
+            }
+            return $n
+        }
+
+        # Build protected set using fuzzy normalization
+        $protectedFuzzy = @{}
+        foreach ($cm in $customModsList) { $protectedFuzzy[(& $fuzzyNormalize (Get-ModBaseName -FileName $cm))] = $true }
+        foreach ($om in $overrideModsList) { $protectedFuzzy[(& $fuzzyNormalize (Get-ModBaseName -FileName $om))] = $true }
+
+        # Build fuzzy lookup table from manifest InstalledMods
+        $manifestFuzzyLookup = @{}  # fuzzyKey -> expected filename
+        foreach ($modName in $modSyncResult.InstalledMods.Keys) {
+            $expectedFile = $modSyncResult.InstalledMods[$modName]
+            $fuzzyKey = & $fuzzyNormalize (Get-ModBaseName -FileName $expectedFile)
+            $manifestFuzzyLookup[$fuzzyKey] = $expectedFile
+        }
+
+        # Group all jars by fuzzy-normalized base name
+        $currentJarsAfterSync = @(Get-ChildItem -LiteralPath $modsDir -Filter '*.jar' -File -ErrorAction SilentlyContinue)
+        $fuzzyGroups = @{}
+        foreach ($jar in $currentJarsAfterSync) {
+            $base = Get-ModBaseName -FileName $jar.Name
+            $fuzzyKey = & $fuzzyNormalize $base
+            if (-not $fuzzyGroups.ContainsKey($fuzzyKey)) { $fuzzyGroups[$fuzzyKey] = @() }
+            $fuzzyGroups[$fuzzyKey] += $jar
+        }
+
+        $duplicatesRemoved = 0
+        foreach ($fuzzyKey in $fuzzyGroups.Keys) {
+            $group = $fuzzyGroups[$fuzzyKey]
+            if ($group.Count -le 1) { continue }
+            if ($protectedFuzzy.ContainsKey($fuzzyKey)) { continue }  # Never touch custom/override mods
+
+            # Multiple jars with the same fuzzy base — keep the one that matches the manifest
+            $expectedFile = $manifestFuzzyLookup[$fuzzyKey]
+            if ($expectedFile) {
+                foreach ($jar in $group) {
+                    if ($jar.Name -ne $expectedFile) {
+                        try {
+                            Remove-Item -LiteralPath $jar.FullName -Force
+                            $duplicatesRemoved++
+                            Write-Log "[NIGHTLY] Removed duplicate: $($jar.Name) (keeping $expectedFile)"
+                        } catch {}
+                    }
+                }
+            } else {
+                # No manifest match — keep the newest file, remove the rest
+                $sorted = $group | Sort-Object LastWriteTime -Descending
+                $keep = $sorted[0]
+                foreach ($jar in $sorted[1..($sorted.Count - 1)]) {
+                    try {
+                        Remove-Item -LiteralPath $jar.FullName -Force
+                        $duplicatesRemoved++
+                        Write-Log "[NIGHTLY] Removed duplicate: $($jar.Name) (keeping newest: $($keep.Name))"
+                    } catch {}
+                }
+            }
+        }
+        if ($duplicatesRemoved -gt 0) {
+            # Output combined with mod-ID cleanup below
+        }
+    }
+
+    # ── Mod-ID based duplicate cleanup ────────────────────────────────────────
+    # Catches duplicates that fuzzy filename matching can't detect:
+    #   tc4tweaks vs Thaumcraft4-Tweaks (abbreviation vs full name)
+    #   adventurebackpack vs AdentureBackpacks2 (rename/rebrand with typo)
+    # Reads mcmod.info from inside each jar to find the actual mod ID.
+    # If two jars share the same mod ID, keeps the manifest one and removes the other.
+    if (Test-Path -LiteralPath $modsDir) {
+        $modIdMap = @{}  # modId -> list of jar FileInfo objects
+        $jarModIdCount = @{}  # jarName -> count of mod IDs in that jar (to detect bundles)
+        $jarsForIdCheck = @(Get-ChildItem -LiteralPath $modsDir -Filter '*.jar' -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Length -gt 0 })
+
+        # Build a HashSet of manifest filenames for O(1) lookup
+        $manifestFileSet = [System.Collections.Generic.HashSet[string]]::new(
+            [StringComparer]::OrdinalIgnoreCase)
+        foreach ($v in $modSyncResult.InstalledMods.Values) { $null = $manifestFileSet.Add($v) }
+
+        # Only scan jars that aren't in the manifest (manifest jars are known-good, no duplicates possible among them)
+        $jarsToScan = @($jarsForIdCheck | Where-Object { -not $manifestFileSet.Contains($_.Name) })
+        # Also include manifest jars that share a fuzzy group with non-manifest jars (potential cross-name duplicates)
+        $nonManifestBases = @{}
+        foreach ($jar in $jarsToScan) {
+            $nonManifestBases[(Get-ModBaseName -FileName $jar.Name)] = $true
+        }
+        # If there are non-manifest jars, also scan all manifest jars (need both sides for mod-ID comparison)
+        if ($jarsToScan.Count -gt 0) {
+            $jarsToScan = $jarsForIdCheck  # Scan all — need manifest jars' IDs to compare against
+        }
+
+        # Parallel mod-ID extraction (8 threads — much faster than sequential on HDD)
+        if ($jarsToScan.Count -gt 0) {
+            $idResults = $jarsToScan | ForEach-Object -ThrottleLimit 8 -Parallel {
+                $jar = $_
+                $zip = $null
+                try {
+                    $zip = [System.IO.Compression.ZipFile]::OpenRead($jar.FullName)
+                    $mcmodEntry = $zip.Entries | Where-Object { $_.FullName -eq 'mcmod.info' } | Select-Object -First 1
+                    if ($mcmodEntry) {
+                        $reader = [System.IO.StreamReader]::new($mcmodEntry.Open())
+                        $content = $reader.ReadToEnd()
+                        $reader.Dispose()
+                        $modIds = @([regex]::Matches($content, '"modid"\s*:\s*"([^"]+)"') | ForEach-Object { $_.Groups[1].Value.ToLower() })
+                        return @{ JarName = $jar.Name; JarPath = $jar.FullName; ModIds = $modIds; Count = $modIds.Count }
+                    }
+                    return @{ JarName = $jar.Name; JarPath = $jar.FullName; ModIds = @(); Count = 0 }
+                } catch {
+                    return @{ JarName = $jar.Name; JarPath = $jar.FullName; ModIds = @(); Count = 0 }
+                } finally {
+                    if ($zip) { try { $zip.Dispose() } catch {} }
+                }
+            }
+
+            # Build the maps from parallel results
+            # Need a jar lookup by name for the removal phase
+            $jarByName = @{}
+            foreach ($jar in $jarsForIdCheck) { $jarByName[$jar.Name] = $jar }
+
+            foreach ($result in $idResults) {
+                if ($result.Count -gt 0) {
+                    $jarModIdCount[$result.JarName] = $result.Count
+                    foreach ($modId in $result.ModIds) {
+                        if (-not $modIdMap.ContainsKey($modId)) { $modIdMap[$modId] = @() }
+                        $modIdMap[$modId] += $jarByName[$result.JarName]
+                    }
+                }
+            }
+        }
+
+        $idDuplicatesRemoved = 0
+        foreach ($modId in $modIdMap.Keys) {
+            $group = $modIdMap[$modId]
+            if ($group.Count -le 1) { continue }
+
+            # Skip if any jar in the group is a bundle/library (3+ mod IDs) — not a real duplicate
+            $hasBundle = $false
+            foreach ($jar in $group) {
+                if (($jarModIdCount[$jar.Name] ?? 0) -ge 3) { $hasBundle = $true; break }
+            }
+            if ($hasBundle) { continue }
+
+            # Check if any are protected (custom/override mods)
+            $anyProtected = $false
+            foreach ($jar in $group) {
+                $base = Get-ModBaseName -FileName $jar.Name
+                $fuzzyKey = & $fuzzyNormalize $base
+                if ($protectedFuzzy.ContainsKey($fuzzyKey)) { $anyProtected = $true; break }
+            }
+            if ($anyProtected) { continue }
+
+            # Find which jar the manifest expects (O(1) HashSet lookup)
+            $manifestFile = $null
+            foreach ($jar in $group) {
+                if ($manifestFileSet.Contains($jar.Name)) {
+                    $manifestFile = $jar.Name
+                    break
+                }
+            }
+
+            if ($manifestFile) {
+                foreach ($jar in $group) {
+                    if ($jar.Name -ne $manifestFile) {
+                        try {
+                            Remove-Item -LiteralPath $jar.FullName -Force
+                            $idDuplicatesRemoved++
+                            Write-Log "[NIGHTLY] Removed mod-ID duplicate: $($jar.Name) (mod ID '$modId', keeping $manifestFile)"
+                        } catch {}
+                    }
+                }
+            } else {
+                # No manifest match — keep newest, remove rest
+                $sorted = $group | Sort-Object LastWriteTime -Descending
+                $keep = $sorted[0]
+                foreach ($jar in $sorted[1..($sorted.Count - 1)]) {
+                    try {
+                        Remove-Item -LiteralPath $jar.FullName -Force
+                        $idDuplicatesRemoved++
+                        Write-Log "[NIGHTLY] Removed mod-ID duplicate: $($jar.Name) (mod ID '$modId', keeping newest: $($keep.Name))"
+                    } catch {}
+                }
+            }
+        }
+        if ($idDuplicatesRemoved -gt 0) {
+            # Combined with fuzzy cleanup count below
+        }
+    }
+
+    # Combined duplicate cleanup message
+    $totalDupsRemoved = ($duplicatesRemoved ?? 0) + ($idDuplicatesRemoved ?? 0)
+    if ($totalDupsRemoved -gt 0) {
+        Write-Info "Cleaned $totalDupsRemoved duplicate mod(s)."
+    }
+
     # ── Step 10: Restore preserved files ──────────────────────────────────────
-    Write-Step "Restoring user files..."
+    Write-Phase "Finalize"
     Invoke-RestoreFiles -InstancePath $instancePath -Target $Target -TempDir $preserveTempDir
     Remove-TempDir $preserveTempDir
 
     # ── Step 11: Apply config patches ─────────────────────────────────────────
-    Write-Step "Applying config patches..."
-    Invoke-ConfigPatches -Config $Config -InstancePath $instancePath -Target $Target
+    try {
+        $patchResult = Invoke-ConfigPatches -Config $Config -InstancePath $instancePath -Target $Target
+        if ($patchResult -is [PSCustomObject] -and $patchResult.MissingFiles -gt 0) {
+            Write-Warn "$($patchResult.MissingFiles) patch(es) need first launch — re-apply from Settings > Config Patches."
+            Write-Log "[PATCH] $($patchResult.MissingFiles) patch(es) skipped (files not yet generated)"
+        }
+    } catch {
+        Write-Warn "Config patches failed: $($_.Exception.Message)"
+        Write-Log "[ERROR] Config patches failed: $($_.Exception.Message)"
+    }
 
     # ── Step 12: Run verification ─────────────────────────────────────────────
-    Write-Step "Running verification..."
-    Invoke-Verification -InstancePath $instancePath -Target $Target -Quick
+    try {
+        Invoke-Verification -InstancePath $instancePath -Target $Target -Quick
+    } catch {
+        Write-Warn "Verification failed: $($_.Exception.Message)"
+        Write-Log "[ERROR] Verification failed: $($_.Exception.Message)"
+    }
 
     # ── Step 13: Record history + save state ──────────────────────────────────
-    Write-Step "Recording update..."
 
     Add-UpdateHistoryEntry -Config $Config -Version $versionLabel -Channel $Channel -Target $Target `
         -Details "+$($modSyncResult.Downloaded) -$($modSyncResult.Removed) ~$($modSyncResult.Unchanged)"
@@ -864,20 +1196,46 @@ function Invoke-NightlyUpdate {
         ManifestMods     = $modSyncResult.InstalledMods
     }
 
+    # Update custom mod stash (persistent backup that survives manual folder replacements)
+    # Uses write-new-then-remove-old pattern to avoid data loss on crash
+    $customModsList = @($Target -eq 'server' ? ($Config.CustomServerMods ?? @()) : ($Config.CustomClientMods ?? @()))
+    if ($customModsList.Count -gt 0) {
+        $modsDir = Join-Path $instancePath 'mods'
+        $customModStashDir = Join-Path (Split-Path -Parent $instancePath) ".gtnh-custom-mods-${Target}"
+        New-Item -Path $customModStashDir -ItemType Directory -Force | Out-Null
+        # Write new files first (safe — overwrites existing with same name)
+        $stashedCount = 0
+        $stashedFiles = @()
+        foreach ($cm in $customModsList) {
+            $cmPath = Join-Path $modsDir $cm
+            if (Test-Path -LiteralPath $cmPath) {
+                Copy-Item -LiteralPath $cmPath -Destination (Join-Path $customModStashDir $cm) -Force
+                $stashedCount++
+                $stashedFiles += $cm
+            }
+        }
+        # Now remove old stash files that are no longer in the custom mods list
+        $stashedFileSet = [System.Collections.Generic.HashSet[string]]::new(
+            [string[]]$stashedFiles, [StringComparer]::OrdinalIgnoreCase)
+        Get-ChildItem -LiteralPath $customModStashDir -Filter '*.jar' -File -ErrorAction SilentlyContinue |
+            Where-Object { -not $stashedFileSet.Contains($_.Name) } |
+            Remove-Item -Force -ErrorAction SilentlyContinue
+        if ($stashedCount -gt 0) {
+            Write-Log "[NIGHTLY] Stashed $stashedCount custom mod(s) for future recovery"
+        }
+    }
+
     # ── Success ───────────────────────────────────────────────────────────────
     Write-Host ""
-    Write-Host "  ╔══════════════════════════════════════════════════════════════╗" -ForegroundColor Green
-    Write-Host "  ║  Update complete!                                           ║" -ForegroundColor Green
-    Write-Host "  ╚══════════════════════════════════════════════════════════════╝" -ForegroundColor Green
+    Write-Host "  ✓ Update complete!" -ForegroundColor Green
     Write-Host ""
-    Write-Host "  $Target updated to " -NoNewline -ForegroundColor Gray
+    Write-Host "  $($Target.ToUpper()) -> " -NoNewline -ForegroundColor Gray
     Write-Host "$versionLabel" -ForegroundColor Green
-    Write-Host "  Channel: $Channel" -ForegroundColor Gray
     if ($modSyncResult.Downloaded -eq 0 -and $modSyncResult.Removed -eq 0) {
-        Write-Host "  Mods: all $($modSyncResult.Unchanged) up to date" -ForegroundColor Gray
+        Write-Host "  Mods: all $($modSyncResult.Unchanged) up to date" -ForegroundColor DarkGreen
     }
     else {
-        Write-Host "  Mods: $($modSyncResult.Downloaded) downloaded, $($modSyncResult.Removed) removed, $($modSyncResult.Unchanged) unchanged" -ForegroundColor Gray
+        Write-Host "  Mods: $($modSyncResult.Downloaded) added, $($modSyncResult.Removed) removed, $($modSyncResult.Unchanged) unchanged" -ForegroundColor Gray
     }
     Write-Host ""
     if (-not $SkipPostMenu) {
@@ -1298,9 +1656,103 @@ function Invoke-NightlyModSync {
     $unchangedCount = $diff.Unchanged.Count
     $skippedCount = $diff.Skipped.Count
 
-    Write-Info "Mod sync plan: $downloadCount to download, $removeCount to remove, $unchangedCount unchanged"
+    Write-Log "[NIGHTLY] Mod sync: $downloadCount to download, $removeCount to remove, $unchangedCount unchanged"
     if ($skippedCount -gt 0) {
-        Write-Info "  ($skippedCount mod(s) skipped - overridden by user)"
+        Write-Log "[NIGHTLY] $skippedCount mod(s) skipped (overridden by user)"
+    }
+
+    # ── Verify SHA1 hashes of "unchanged" mods against Maven ──────────────────
+    # Catches corrupted/stale mods that have the right filename but wrong contents
+    if ($unchangedCount -gt 0) {
+        Write-Dots "Verifying mod integrity"
+        $modsToVerify = @()
+        foreach ($modName in $diff.Unchanged) {
+            $modEntry = $diff.Expected[$modName]
+            if ($modEntry.Source -eq 'external') { continue }  # External mods don't have Maven SHA1
+            if (-not $modEntry.FileName) { continue }
+            $modPath = Join-Path $modsDir $modEntry.FileName
+            if (-not (Test-Path -LiteralPath $modPath)) { continue }
+            $modsToVerify += @{
+                ModName  = $modName
+                Version  = $modEntry.Version
+                FileName = $modEntry.FileName
+                FilePath = $modPath
+            }
+        }
+
+        if ($modsToVerify.Count -gt 0) {
+            $hashFailures = @()
+            $mavenBaseUrl = $script:GtnhMavenBase
+            $verifyTimer = [System.Diagnostics.Stopwatch]::StartNew()
+            $verifyResults = $modsToVerify | ForEach-Object -ThrottleLimit $script:MaxParallelDownloads -Parallel {
+                $mod = $_
+                $mavenBase = $using:mavenBaseUrl
+                $httpClient = $null
+                $sha1 = $null
+                try {
+                    # Compute local SHA1
+                    $sha1 = [System.Security.Cryptography.SHA1]::Create()
+                    $fileBytes = [System.IO.File]::ReadAllBytes($mod.FilePath)
+                    $hashBytes = $sha1.ComputeHash($fileBytes)
+                    $localHash = -join ($hashBytes | ForEach-Object { $_.ToString('x2') })
+
+                    # Fetch expected SHA1 from Maven
+                    $sha1Url = "$mavenBase/$($mod.ModName)/$($mod.Version)/$($mod.FileName).sha1"
+                    $httpClient = [System.Net.Http.HttpClient]::new()
+                    $httpClient.DefaultRequestHeaders.Add('User-Agent', 'GTNH-Updater-Script')
+                    $httpClient.Timeout = [TimeSpan]::FromSeconds(10)
+                    $expectedHash = $httpClient.GetStringAsync($sha1Url).Result.Trim().Split(' ')[0].ToLower()
+
+                    if ($expectedHash.Length -ge 40 -and $localHash -ne $expectedHash) {
+                        return @{ ModName = $mod.ModName; Version = $mod.Version; FileName = $mod.FileName; Failed = $true }
+                    }
+                    return @{ Failed = $false }
+                } catch {
+                    # If we can't verify (network error, no SHA1 file), skip — don't flag as failure
+                    return @{ Failed = $false }
+                } finally {
+                    if ($sha1) { try { $sha1.Dispose() } catch {} }
+                    if ($httpClient) { try { $httpClient.Dispose() } catch {} }
+                }
+            }
+
+            $verifyTotal = $modsToVerify.Count
+            $verifyCount = 0
+            foreach ($result in $verifyResults) {
+                if ($result.Failed) {
+                    $hashFailures += $result
+                }
+                $verifyCount++
+                if ($verifyCount % 5 -eq 0 -or $verifyCount -eq $verifyTotal) {
+                    $percent = [math]::Floor(($verifyCount / $verifyTotal) * 100)
+                    $bar = ('█' * [math]::Floor($percent / 2)).PadRight(50, '░')
+                    Write-Host "`r$("  [$bar] ${percent}%  ${verifyCount}/${verifyTotal}".PadRight((Get-TerminalWidth)))" -NoNewline -ForegroundColor Gray
+                }
+            }
+            Write-Host "`r$(' ' * (Get-TerminalWidth))`r" -NoNewline
+
+            if ($hashFailures.Count -gt 0) {
+                Write-Warn "$($hashFailures.Count) mod(s) failed integrity check — will re-download:"
+                foreach ($hf in $hashFailures) {
+                    Write-Info "  - $($hf.FileName)"
+                    Write-Log "[NIGHTLY] Hash mismatch: $($hf.ModName) v$($hf.Version) — queued for re-download"
+                    # Add to download list
+                    $diff.ToDownload += @{
+                        ModName  = $hf.ModName
+                        Version  = $hf.Version
+                        FileName = $hf.FileName
+                        Url      = Get-MavenDownloadUrl -ModName $hf.ModName -Version $hf.Version
+                    }
+                }
+                $downloadCount = $diff.ToDownload.Count
+                Write-Info "Updated plan: $downloadCount to download"
+            } else {
+                $verifyElapsed = [math]::Round($verifyTimer.Elapsed.TotalSeconds, 1)
+                Write-Success "All $($modsToVerify.Count) mod(s) verified. (${verifyElapsed}s)"
+            }
+        } else {
+            Complete-Dots "skipped (no Maven mods)" -Color DarkGray
+        }
     }
 
     # Remove old mods first
@@ -1318,7 +1770,81 @@ function Invoke-NightlyModSync {
             }
         }
         if ($actualRemoved -gt 0) {
-            Write-Info "Removed $actualRemoved old mod(s)."
+            Write-Log "[NIGHTLY] Removed $actualRemoved old mod(s)"
+        }
+    }
+
+    # Pre-download sweep: remove ANY existing jar that shares a base name with a mod
+    # we're about to download. This catches files placed manually (zip copy, restore, etc.)
+    # that the diff's state-based removal missed.
+    if ($diff.ToDownload.Count -gt 0) {
+        # Build protected base names (custom + override mods that should never be removed)
+        $customMods = @($Target -eq 'server' ? ($Config.CustomServerMods ?? @()) : ($Config.CustomClientMods ?? @()))
+        $overrideMods = @($Target -eq 'server' ? ($Config.OverrideServerMods ?? @()) : ($Config.OverrideClientMods ?? @()))
+        $protectedBaseNames = @{}
+        foreach ($cm in $customMods) { $protectedBaseNames[(Get-ModBaseName -FileName $cm)] = $true }
+        foreach ($om in $overrideMods) { $protectedBaseNames[(Get-ModBaseName -FileName $om)] = $true }
+
+        $downloadBaseNames = @{}
+        foreach ($mod in $diff.ToDownload) {
+            $baseName = Get-ModBaseName -FileName $mod.FileName
+            $downloadBaseNames[$baseName] = $mod.FileName
+        }
+
+        $currentJarsOnDisk = @(Get-ChildItem -LiteralPath $modsDir -Filter '*.jar' -File -ErrorAction SilentlyContinue)
+        # Also include mods/1.7.10/ subfolder (coremods)
+        $subModsDir = Join-Path $modsDir '1.7.10'
+        if (Test-Path -LiteralPath $subModsDir) {
+            $currentJarsOnDisk += @(Get-ChildItem -LiteralPath $subModsDir -Filter '*.jar' -File -ErrorAction SilentlyContinue)
+        }
+        foreach ($jar in $currentJarsOnDisk) {
+            $jarBase = Get-ModBaseName -FileName $jar.Name
+            if ($downloadBaseNames.ContainsKey($jarBase)) {
+                # This jar has the same base name as something we're downloading — it's an old version
+                # Don't remove if it's the exact file we're about to download (shouldn't happen, but safe)
+                if ($jar.Name -eq $downloadBaseNames[$jarBase]) { continue }
+                # Don't remove protected mods
+                if ($protectedBaseNames.ContainsKey($jarBase)) { continue }
+                try {
+                    Remove-Item -LiteralPath $jar.FullName -Force
+                    $actualRemoved++
+                    Write-Log "[NIGHTLY] Pre-download cleanup: removed $($jar.Name) (will be replaced by $($downloadBaseNames[$jarBase]))"
+                } catch {}
+            }
+        }
+
+        # Also do a fuzzy sweep for naming convention differences
+        $downloadFuzzyNames = @{}
+        foreach ($mod in $diff.ToDownload) {
+            $baseName = Get-ModBaseName -FileName $mod.FileName
+            $fuzzy = ($baseName -replace "['']s\b", 's') -replace '-s-', 's'
+            $fuzzy = ($fuzzy -replace '[\s\-_\.+]', '').ToLower()
+            if ($fuzzy.Length -gt 5 -and $fuzzy.EndsWith('s') -and $fuzzy -notmatch '(ss|ps|ns|us|is|as)$') { $fuzzy = $fuzzy.Substring(0, $fuzzy.Length - 1) }
+            $downloadFuzzyNames[$fuzzy] = $mod.FileName
+        }
+        foreach ($jar in $currentJarsOnDisk) {
+            if (-not (Test-Path -LiteralPath $jar.FullName)) { continue }  # Already removed above
+            $jarBase = Get-ModBaseName -FileName $jar.Name
+            $jarFuzzy = ($jarBase -replace "['']s\b", 's') -replace '-s-', 's'
+            $jarFuzzy = ($jarFuzzy -replace '[\s\-_\.+]', '').ToLower()
+            if ($jarFuzzy.Length -gt 5 -and $jarFuzzy.EndsWith('s') -and $jarFuzzy -notmatch '(ss|ps|ns|us|is|as)$') { $jarFuzzy = $jarFuzzy.Substring(0, $jarFuzzy.Length - 1) }
+            if ($downloadFuzzyNames.ContainsKey($jarFuzzy)) {
+                if ($jar.Name -eq $downloadFuzzyNames[$jarFuzzy]) { continue }
+                # Check protected (fuzzy)
+                $jarBaseProtected = $false
+                foreach ($pb in $protectedBaseNames.Keys) {
+                    $pbFuzzy = ($pb -replace "['']s\b", 's') -replace '-s-', 's'
+                    $pbFuzzy = ($pbFuzzy -replace '[\s\-_\.+]', '').ToLower()
+                    if ($pbFuzzy.Length -gt 5 -and $pbFuzzy.EndsWith('s') -and $pbFuzzy -notmatch '(ss|ps|ns|us|is|as)$') { $pbFuzzy = $pbFuzzy.Substring(0, $pbFuzzy.Length - 1) }
+                    if ($pbFuzzy -eq $jarFuzzy) { $jarBaseProtected = $true; break }
+                }
+                if ($jarBaseProtected) { continue }
+                try {
+                    Remove-Item -LiteralPath $jar.FullName -Force
+                    $actualRemoved++
+                    Write-Log "[NIGHTLY] Pre-download fuzzy cleanup: removed $($jar.Name) (fuzzy match for $($downloadFuzzyNames[$jarFuzzy]))"
+                } catch {}
+            }
         }
     }
 
@@ -1327,11 +1853,10 @@ function Invoke-NightlyModSync {
     $failCount = 0
 
     if ($downloadCount -eq 0) {
-        Write-Success "All mods are up to date."
+        Write-Success "All mods up to date."
     }
     else {
         Write-Info "Downloading $downloadCount mod(s)..."
-        Write-Host ""
 
         $totalToDownload = $downloadCount
         $downloadStartTime = [System.Diagnostics.Stopwatch]::StartNew()
@@ -1358,8 +1883,11 @@ function Invoke-NightlyModSync {
                 try {
                     $bytes = [byte[]]::new(4)
                     $fs = [System.IO.File]::OpenRead($path)
-                    $fs.Read($bytes, 0, 4) | Out-Null
-                    $fs.Dispose()
+                    try {
+                        $fs.Read($bytes, 0, 4) | Out-Null
+                    } finally {
+                        $fs.Dispose()
+                    }
                     return ($bytes[0] -eq 0x50 -and $bytes[1] -eq 0x4B)
                 }
                 catch { return $false }
@@ -1460,16 +1988,19 @@ function Invoke-NightlyModSync {
                 }
             }
             $statusLine = "  [$bar] ${percent}%  ${progress}/${totalToDownload}${eta}"
-            Write-Host "`r$($statusLine.PadRight(80))" -NoNewline -ForegroundColor Gray
+            Write-Host "`r$($statusLine.PadRight((Get-TerminalWidth)))" -NoNewline -ForegroundColor Gray
         }
 
         # Clear the progress bar line and move to next line
-        Write-Host "`r$(' ' * 85)`r" -NoNewline
+        Write-Host "`r$(' ' * (Get-TerminalWidth))`r" -NoNewline
         Write-Host ""
+
+        $downloadElapsed = [math]::Round($downloadStartTime.Elapsed.TotalSeconds, 1)
 
         # Log all results (parallel blocks can't access Write-Log)
         if ($successCount -gt 0) {
-            Write-Log "[NIGHTLY] Parallel download: $successCount mod(s) succeeded"
+            Write-Success "Downloaded $successCount mod(s) in ${downloadElapsed}s."
+            Write-Log "[NIGHTLY] Parallel download: $successCount mod(s) succeeded in ${downloadElapsed}s"
         }
         if ($failCount -gt 0) {
             foreach ($failed in $failedMods) {
@@ -1509,12 +2040,14 @@ function Invoke-NightlyModSync {
                     $httpClient.DefaultRequestHeaders.Add('User-Agent', 'GTNH-Updater-Script')
                     $httpClient.Timeout = [TimeSpan]::FromMinutes(2)
                     $modBytes = $httpClient.GetByteArrayAsync($ghUrl).Result
-                    if ($modBytes -and $modBytes.Length -gt 1024) {
+                    if ($modBytes -and $modBytes.Length -gt 1024 -and $modBytes[0] -eq 0x50 -and $modBytes[1] -eq 0x4B) {
                         $destPath = Join-Path $modsDir $failed.FileName
                         [System.IO.File]::WriteAllBytes($destPath, $modBytes)
                         $successCount++
                         $failCount--
                         Write-Success "$($failed.ModName) (GitHub fallback)"
+                    } elseif ($modBytes -and $modBytes.Length -gt 1024) {
+                        Write-Warn "$($failed.ModName): download is not a valid jar (possibly an error page)"
                     } else {
                         Write-Warn "$($failed.ModName): download too small ($($modBytes.Length) bytes)"
                     }
@@ -1530,7 +2063,7 @@ function Invoke-NightlyModSync {
         }
 
         if ($successCount -gt 0) {
-            Write-Success "Downloaded $successCount mod(s) successfully."
+            Write-Log "[NIGHTLY] Downloaded $successCount mod(s) successfully"
         }
         if ($failCount -gt 0) {
             Write-Warn "$failCount mod(s) could not be downloaded from any source."
@@ -1648,7 +2181,9 @@ function Invoke-NightlyModSync {
                     foreach ($dirName in $zipDirNames) {
                         $destDir = Join-Path $instanceRoot $dirName
                         if (Test-Path -LiteralPath $destDir) {
+                            $oldProgress = $ProgressPreference; $ProgressPreference = 'SilentlyContinue'
                             Get-ChildItem -LiteralPath $destDir -Force | Remove-Item -Recurse -Force
+                            $ProgressPreference = $oldProgress
                             Write-Log "[NIGHTLY] Cleaned contents of: $dirName/"
                         } else {
                             New-Item -Path $destDir -ItemType Directory -Force | Out-Null
@@ -1791,8 +2326,11 @@ function Invoke-NightlyConfigSync {
     try {
         $zipBytes = [byte[]]::new(4)
         $fs = [System.IO.File]::OpenRead($zipPath)
-        $fs.Read($zipBytes, 0, 4) | Out-Null
-        $fs.Dispose()
+        try {
+            $fs.Read($zipBytes, 0, 4) | Out-Null
+        } finally {
+            $fs.Dispose()
+        }
         if ($zipBytes[0] -ne 0x50 -or $zipBytes[1] -ne 0x4B) {
             Write-Err "Downloaded config pack is not a valid zip file (may be an error page)."
             Remove-Item -LiteralPath $zipPath -Force -ErrorAction SilentlyContinue
@@ -1815,7 +2353,7 @@ function Invoke-NightlyConfigSync {
     }
 
     # Extract the zip
-    Write-Info "Extracting configs..."
+    Write-Dots "Extracting configs"
     try {
         if (Test-Path -LiteralPath $extractDir) {
             $oldProgress = $ProgressPreference; $ProgressPreference = 'SilentlyContinue'
@@ -1825,8 +2363,10 @@ function Invoke-NightlyConfigSync {
 
         Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
         [System.IO.Compression.ZipFile]::ExtractToDirectory($zipPath, $extractDir)
+        Complete-Dots "ok"
     }
     catch {
+        Complete-Dots "failed" -Color Red
         Write-Err "Failed to extract config pack: $($_.Exception.Message)"
         Remove-Item -LiteralPath $extractDir -Recurse -Force -ErrorAction SilentlyContinue
         Remove-Item -LiteralPath $zipPath -Force -ErrorAction SilentlyContinue
@@ -1924,7 +2464,7 @@ function Invoke-NightlyConfigSync {
             $ProgressPreference = $oldProgress
         }
         Copy-Item -LiteralPath $configSource -Destination $instanceConfigDir -Recurse -Force
-        Write-Success "Configs updated from $ConfigTag."
+        Write-Log "[NIGHTLY] Configs updated from $ConfigTag"
     }
     catch {
         Write-Err "Failed to copy configs: $($_.Exception.Message)"
@@ -1934,6 +2474,7 @@ function Invoke-NightlyConfigSync {
     }
 
     # Copy scripts/ if present
+    $scriptsSynced = $false
     if (Test-Path -LiteralPath $scriptsSource) {
         $instanceScriptsDir = Join-Path $InstancePath 'scripts'
         try {
@@ -1943,7 +2484,7 @@ function Invoke-NightlyConfigSync {
                 $ProgressPreference = $oldProgress
             }
             Copy-Item -LiteralPath $scriptsSource -Destination $instanceScriptsDir -Recurse -Force
-            Write-Info "Scripts updated."
+            $scriptsSynced = $true
         }
         catch {
             Write-Warn "Could not update scripts: $($_.Exception.Message)"
@@ -1951,6 +2492,7 @@ function Invoke-NightlyConfigSync {
     }
 
     # Copy resources/ if present
+    $resourcesSynced = $false
     if (Test-Path -LiteralPath $resourcesSource) {
         $instanceResourcesDir = Join-Path $InstancePath 'resources'
         try {
@@ -1960,7 +2502,7 @@ function Invoke-NightlyConfigSync {
                 $ProgressPreference = $oldProgress
             }
             Copy-Item -LiteralPath $resourcesSource -Destination $instanceResourcesDir -Recurse -Force
-            Write-Info "Resources updated."
+            $resourcesSynced = $true
         }
         catch {
             Write-Warn "Could not update resources: $($_.Exception.Message)"
@@ -2016,7 +2558,7 @@ function Invoke-NightlyConfigSync {
             }
         }
         if ($copiedCount -gt 0) {
-            Write-Info "Copied $copiedCount external mod(s) from release zip."
+            Write-Log "[NIGHTLY] Copied $copiedCount external mod(s) from release zip"
         }
         if ($skippedMavenCount -gt 0) {
             Write-Log "[NIGHTLY] Skipped $skippedMavenCount Maven mod(s) from zip (already downloaded with correct nightly versions)"
@@ -2040,6 +2582,12 @@ function Invoke-NightlyConfigSync {
             }
         }
     }
+
+    # Combined sync summary
+    $syncParts = @('config')
+    if ($scriptsSynced) { $syncParts += 'scripts' }
+    if ($resourcesSynced) { $syncParts += 'resources' }
+    Write-Success "Synced $($syncParts -join ', ')."
 
     # Clean up temp files
     $oldProgress = $ProgressPreference; $ProgressPreference = 'SilentlyContinue'
@@ -2092,7 +2640,9 @@ function Save-NightlyState {
     .SYNOPSIS
         Write the nightly updater state file to the instance atomically.
     .DESCRIPTION
-        Uses write-to-temp-then-rename to prevent corruption on interrupted writes.
+        Uses write-to-temp-then-atomic-replace to prevent corruption on interrupted writes.
+        On Windows uses [System.IO.File]::Replace for true atomic replacement.
+        On Linux uses Move-Item (rename is atomic on same filesystem).
     .PARAMETER InstancePath
         Path to the game instance.
     .PARAMETER State
@@ -2105,9 +2655,20 @@ function Save-NightlyState {
 
     $statePath = Join-Path $InstancePath $script:NightlyStateFileName
     $tempPath = "${statePath}.tmp"
+    $backupPath = "${statePath}.bak"
     try {
         $State | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $tempPath -Encoding UTF8 -Force
-        Move-Item -LiteralPath $tempPath -Destination $statePath -Force
+        if ($IsWindows -and (Test-Path -LiteralPath $statePath)) {
+            # Atomic replace on Windows (single filesystem operation)
+            [System.IO.File]::Replace($tempPath, $statePath, $backupPath)
+            # Clean up backup file
+            if (Test-Path -LiteralPath $backupPath) {
+                Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
+            }
+        } else {
+            # Linux rename or first-time write (no existing file to replace)
+            Move-Item -LiteralPath $tempPath -Destination $statePath -Force
+        }
         Write-Log "[NIGHTLY] State saved: $statePath"
     }
     catch {
@@ -2162,7 +2723,7 @@ function Show-NightlyUpdatePlan {
         $externalModCount = if ($Manifest.external_mods) { @($Manifest.external_mods.PSObject.Properties).Count } else { 0 }
         $totalModCount = $githubModCount + $externalModCount
         Write-Host "  Mods:     " -NoNewline -ForegroundColor Gray
-        Write-Host "$githubModCount github + $externalModCount external = $totalModCount total" -ForegroundColor White
+        Write-Host "$totalModCount in pack" -ForegroundColor White
     }
 
     # Show custom/override mod counts
@@ -2475,7 +3036,9 @@ function Invoke-NightlyRollback {
                     else {
                         # Full: wipe and replace entirely (original behavior)
                         if (Test-Path -LiteralPath $destPath) {
+                            $oldProgress = $ProgressPreference; $ProgressPreference = 'SilentlyContinue'
                             Remove-Item -LiteralPath $destPath -Recurse -Force
+                            $ProgressPreference = $oldProgress
                         }
                         Copy-Item -LiteralPath $sourcePath -Destination $destPath -Recurse -Force
                         Write-Info "  Restored: $folder/"

@@ -1,6 +1,6 @@
 # GTNH Updater
 
-**Version 0.4.6-beta**
+**Version 0.5.0-beta**
 
 Automates updating [GregTech: New Horizons](https://www.gtnewhorizons.com/) server and client instances on Windows and Linux. Interactive and menu-driven. Works with any server setup and any launcher that uses a standard `.minecraft` folder structure (Prism Launcher, MultiMC, PolyMC, ATLauncher, etc.).
 
