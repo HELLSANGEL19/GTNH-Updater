@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.5.1-beta] - 2026-06-07
+
+### Fixed
+
+* Client crash when daily channel uses a beta release as its config tag
+* Beta/RC pack downloads failing with "check your internet connection"
+* JourneyMap explored map (fog of war) no longer reset after updates
+* Version arrow showing incorrect downgrades after switching channels
+* Switching from a stable beta to daily channel now properly transitions
+* Main menu version not updating after rollback
+* Various other bug fixes and stability improvements
+
 ## [0.5.0-beta] - 2026-05-27
 
 ### Added

@@ -38,6 +38,7 @@ function Get-ClientPreservationList {
     #>
     return @(
         'journeymap'
+        'config/journeymap'
         'visualprospecting'
         'TCNodeTracker'
         'saves'

@@ -1,6 +1,6 @@
 # GTNH Updater
 
-**Version 0.5.0-beta**
+**Version 0.5.1-beta**
 
 Automates updating [GregTech: New Horizons](https://www.gtnewhorizons.com/) server and client instances on Windows and Linux. Interactive and menu-driven. Works with any server setup and any launcher that uses a standard `.minecraft` folder structure (Prism Launcher, MultiMC, PolyMC, ATLauncher, etc.).
 
@@ -39,6 +39,20 @@ cd "C:\path\to\GTNHUpdater"
 3. The setup wizard walks you through everything on first run
 
 Or directly: `pwsh -File ./Update-GTNH.ps1`
+
+### Hosted Servers (AMP, Pterodactyl, etc.)
+
+Requires SSH or console access to your server. Most web-only file managers won't work since the updater is interactive.
+
+1. SSH into your server
+2. Install PowerShell 7 if not present (the launcher script offers to do this, or: `sudo apt install powershell`)
+3. Upload/clone this repository anywhere on the server
+4. Run `./Launch-GTNHUpdater.sh` and point it at your server's game directory
+5. Stop the server before updating, start it after
+
+The setup wizard auto-detects common panel paths (AMP, Pterodactyl, etc.). If it doesn't find yours, use manual path entry.
+
+If you only have SFTP/file manager access (no shell), you can run the updater on your local machine pointed at a local folder, then upload the updated files to your server manually.
 
 ## How It Works
 
@@ -171,6 +185,7 @@ Shows installed versions, latest available version, channel, and counts of custo
 
 ### Client
 - `journeymap/` - Waypoints and maps
+- `config/journeymap/` - JourneyMap explored map state
 - `visualprospecting/` - JourneyMap ore vein data
 - `TCNodeTracker/` - JourneyMap Thaumcraft node data
 - `saves/` - Singleplayer worlds and NEI data

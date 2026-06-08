@@ -899,28 +899,12 @@ function Invoke-ConfigPatchMenu {
                         Description = 'Prevent all GregTech machines from exploding under any condition'
                     }
                     [PSCustomObject]@{
-                        Name        = 'Disable GT rain explosions'
+                        Name        = 'Disable GT rain/thunder explosions'
                         FilePath    = 'config/GregTech/GregTech.cfg'
                         Key         = 'B:machineRainExplosions'
                         Section     = 'machines'
                         Value       = 'false'
-                        Description = 'Machines will not explode when exposed to rain'
-                    }
-                    [PSCustomObject]@{
-                        Name        = 'Disable GT thunder explosions'
-                        FilePath    = 'config/GregTech/GregTech.cfg'
-                        Key         = 'B:machineThunderExplosions'
-                        Section     = 'machines'
-                        Value       = 'false'
-                        Description = 'Machines will not explode during thunderstorms'
-                    }
-                    [PSCustomObject]@{
-                        Name        = 'Disable GT fire explosions'
-                        FilePath    = 'config/GregTech/GregTech.cfg'
-                        Key         = 'B:machineFireExplosions'
-                        Section     = 'machines'
-                        Value       = 'false'
-                        Description = 'Machines will not explode when adjacent to fire'
+                        Description = 'Machines will not explode when exposed to rain (also set machineThunderExplosions for thunder)'
                     }
                     [PSCustomObject]@{
                         Name        = 'Disable GT wrench explosions'
@@ -955,11 +939,12 @@ function Invoke-ConfigPatchMenu {
                         Description = 'Prevent special creeper variants (gravel, doom, splitting, etc.) from spawning'
                     }
                     [PSCustomObject]@{
-                        Name        = 'Set sleep percentage to skip night (ServerUtilities)'
-                        FilePath    = 'serverutilities/serverutilities.cfg'
-                        Key         = 'I:player_sleeping_percentage'
+                        Name        = 'Morpheus sleep percentage'
+                        FilePath    = 'config/Morpheus.cfg'
+                        Key         = 'I:SleeperPerc'
+                        Section     = 'settings'
                         Value       = '50'
-                        Description = 'Percentage of players that must sleep to skip night (server only, default 33)'
+                        Description = 'Percentage of online players that must sleep to skip night (server only, default 50)'
                     }
                     [PSCustomObject]@{
                         Name        = 'Disable warp environmental effects'
@@ -974,79 +959,6 @@ function Invoke-ConfigPatchMenu {
                         Key         = 'B:borderless'
                         Value       = 'true'
                         Description = 'Replaces exclusive fullscreen with borderless windowed (requires Java 17+ pack, not Java 8)'
-                    }
-                    [PSCustomObject]@{
-                        Name        = 'Disable warp mechanics (Thaumcraft)'
-                        FilePath    = 'config/Thaumcraft.cfg'
-                        Key         = 'B:wuss_mode'
-                        Value       = 'true'
-                        Description = 'Disables warp and all related mechanics entirely'
-                    }
-                    [PSCustomObject]@{
-                        Name        = 'Disable taint biome spreading (Thaumcraft)'
-                        FilePath    = 'config/Thaumcraft.cfg'
-                        Key         = 'I:biome_taint_spread'
-                        Value       = '0'
-                        Description = 'Prevents taint biomes from spreading (0 = disabled)'
-                    }
-                    [PSCustomObject]@{
-                        Name        = 'Disable taint from flux (Thaumcraft)'
-                        FilePath    = 'config/Thaumcraft.cfg'
-                        Key         = 'B:biome_taint_from_flux'
-                        Value       = 'false'
-                        Description = 'Prevents flux effects from causing taint biomes'
-                    }
-                    [PSCustomObject]@{
-                        Name        = 'Lock BetterQuesting tray on open'
-                        FilePath    = 'config/betterquesting.cfg'
-                        Key         = 'B:"Lock tray"'
-                        Section     = 'general'
-                        Value       = 'true'
-                        Description = 'Quest chapter list will be locked and opened by default (client)'
-                    }
-                    [PSCustomObject]@{
-                        Name        = 'Disable BetterQuesting quest notices'
-                        FilePath    = 'config/betterquesting.cfg'
-                        Key         = 'B:"Quest Notices"'
-                        Section     = 'general'
-                        Value       = 'false'
-                        Description = 'Disables popup notifications when quests are completed or updated (client)'
-                    }
-                    [PSCustomObject]@{
-                        Name        = 'Unrestrict BetterQuesting admin commands'
-                        FilePath    = 'config/betterquesting.cfg'
-                        Key         = 'B:"Unrestrict Admin Commands"'
-                        Section     = 'general'
-                        Value       = 'true'
-                        Description = 'Allows all users to use /bq_admin commands without op status (useful for singleplayer without cheats)'
-                    }
-                    [PSCustomObject]@{
-                        Name        = 'Disable Blood Moon (RandomThings)'
-                        FilePath    = 'config/RandomThings.cfg'
-                        Key         = 'D:BloodMoonChance'
-                        Value       = '0.0'
-                        Description = 'Set blood moon chance to 0 — disables blood moons entirely'
-                    }
-                    [PSCustomObject]@{
-                        Name        = 'Disable HungerOverhaul difficulty scaling'
-                        FilePath    = 'config/HungerOverhaul/HungerOverhaul.cfg'
-                        Key         = 'B:difficultyScaling'
-                        Value       = 'false'
-                        Description = 'Disables all difficulty-based hunger/healing/effects scaling'
-                    }
-                    [PSCustomObject]@{
-                        Name        = 'Disable SpiceOfLife food penalties'
-                        FilePath    = 'config/SpiceOfLife.cfg'
-                        Key         = 'B:food.modifier.enabled'
-                        Value       = 'false'
-                        Description = 'Disables diminishing returns on eating the same food repeatedly'
-                    }
-                    [PSCustomObject]@{
-                        Name        = 'Disable hard mode nodes (Thaumcraft)'
-                        FilePath    = 'config/Thaumcraft.cfg'
-                        Key         = 'B:hard_mode_nodes'
-                        Value       = 'false'
-                        Description = 'Dark/hungry/tainted nodes will not have extra nasty effects'
                     }
                 )
 
@@ -1378,7 +1290,7 @@ function Invoke-ConfigPatchMenu {
                         $configTag = $stateData.InstalledVersion
                         Write-Info "Comparing against config defaults from: $($configTag -replace 'nightly-', '' -replace 'experimental-', '')"
 
-                        $releaseInfo = Get-NightlyReleaseInfo -ConfigTag $configTag
+                        $releaseInfo = Get-NightlyReleaseInfo -ConfigTag $configTag -Target $scanTargetName
                         if (-not $releaseInfo -or -not $releaseInfo.ZipUrl) {
                             Write-Warn "Could not find config zip URL for $configTag."
                             Wait-ForKey; continue

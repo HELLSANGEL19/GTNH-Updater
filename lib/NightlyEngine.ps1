@@ -184,7 +184,7 @@ function Invoke-NightlyUpdate {
     Write-Success "$totalModCount mods, config: $configTag"
 
     # ── Step 2: Get release info ──────────────────────────────────────────────
-    $releaseInfo = Get-NightlyReleaseInfo -ConfigTag $configTag
+    $releaseInfo = Get-NightlyReleaseInfo -ConfigTag $configTag -Target $Target
     $versionLabel = $configTag
 
     # Read current state
@@ -216,8 +216,18 @@ function Invoke-NightlyUpdate {
         $looksLikeNightly = $currentVersion -match 'nightly|daily|experimental|\d{4}-\d{2}-\d{2}'
         $looksLikePreRelease = $currentVersion -match '[-_](beta|rc|pre|alpha)'
         # Only transition if it's a clean stable version (not nightly, not pre-release)
-        # Pre-release/beta versions are close enough to nightly that a full wipe isn't needed
-        $isTransition = -not $looksLikeNightly -and -not $looksLikePreRelease
+        # Pre-release/beta versions skip transition ONLY if we have a nightly state file
+        # (meaning we're already on the nightly track). If there's no state file, a beta
+        # was installed via the stable version picker and needs a clean transition.
+        if ($looksLikeNightly) {
+            $isTransition = $false
+        } elseif ($looksLikePreRelease -and $state) {
+            # Beta with existing nightly state — already on nightly track, no wipe needed
+            $isTransition = $false
+        } else {
+            # Stable version OR beta without nightly state — needs clean transition
+            $isTransition = $true
+        }
     }
     Write-Log "[NIGHTLY] Version check: current='$currentVersion' target='$versionLabel' isTransition=$isTransition"
 
@@ -1313,19 +1323,29 @@ function Get-NightlyReleaseInfo {
         matching the config tag. Returns the zip asset URL for config extraction.
     .PARAMETER ConfigTag
         The config version tag (e.g., '2.9.0-nightly-2026-05-11').
+    .PARAMETER Target
+        'server' or 'client' - used to select the correct zip when multiple exist.
     .OUTPUTS
         PSCustomObject with TagName, ZipUrl, ZipSize, ZipName, or $null on failure.
     #>
     param(
-        [Parameter(Mandatory)][string]$ConfigTag
+        [Parameter(Mandatory)][string]$ConfigTag,
+        [string]$Target = 'client'
     )
 
     $tagUrl = "https://api.github.com/repos/GTNewHorizons/GT-New-Horizons-Modpack/releases/tags/$ConfigTag"
-    Write-Log "[NIGHTLY] Fetching release info for tag: $ConfigTag"
+    Write-Log "[NIGHTLY] Fetching release info for tag: $ConfigTag (target: $Target)"
 
     $release = Invoke-GitHubApi -Uri $tagUrl
     if ($release) {
-        $zipAsset = $release.assets | Where-Object { $_.name -like '*.zip' } | Select-Object -First 1
+        # Prefer the zip matching the target (Server/Client in name)
+        $zipAsset = $null
+        $targetPattern = if ($Target -eq 'server') { '*[Ss]erver*' } else { '*[Cc]lient*' }
+        $zipAsset = $release.assets | Where-Object { $_.name -like '*.zip' -and $_.name -like $targetPattern } | Select-Object -First 1
+        # Fall back to any zip if no target-specific one exists (universal nightly zips)
+        if (-not $zipAsset) {
+            $zipAsset = $release.assets | Where-Object { $_.name -like '*.zip' } | Select-Object -First 1
+        }
         if ($zipAsset) {
             return [PSCustomObject]@{
                 TagName = $release.tag_name

@@ -392,6 +392,11 @@ function Invoke-FileDownload {
         $httpClient.Timeout = [TimeSpan]::FromMinutes(10)
 
         $response = $httpClient.GetAsync($Url, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).Result
+        if ([int]$response.StatusCode -eq 404) {
+            Write-Err "File not found at download URL (404). The version may not be available for this pack type."
+            Write-Log "[ERROR] Download 404: $Url"
+            return $false
+        }
         $response.EnsureSuccessStatusCode()
 
         $totalBytes = $response.Content.Headers.ContentLength
@@ -687,7 +692,7 @@ function Get-WebsiteReleases {
             return $null
         }
 
-        $javaSuffix = $PackType -eq 'java17' ? 'Java_17-25' : 'Java_8'
+        $javaSuffix = $PackType -eq 'java17' ? 'Java_17' : 'Java_8'
         $releases = @()
 
         foreach ($m in $regexMatches) {
@@ -702,16 +707,43 @@ function Get-WebsiteReleases {
                 $date = $Matches[1]
             }
 
-            $urls = New-ZipUrls -Version $version -PackType $PackType
+            # Parse actual download URLs from the page links for this version
+            # Look for links containing this version string and the Java suffix
+            $versionEscaped = [regex]::Escape($version)
+            $serverZipUrl = $null
+            $serverZipName = $null
+            $clientZipUrl = $null
+            $clientZipName = $null
+
+            foreach ($link in $response.Links) {
+                $href = $link.href
+                if (-not $href -or $href -notmatch $versionEscaped -or $href -notmatch '\.zip$') { continue }
+                if ($href -notmatch $javaSuffix) { continue }
+
+                if ($href -match 'ServerPacks') {
+                    $serverZipUrl = $href
+                    $serverZipName = Split-Path -Leaf $href
+                } elseif ($href -match 'Multi_mc_downloads') {
+                    $clientZipUrl = $href
+                    $clientZipName = Split-Path -Leaf $href
+                }
+            }
+
+            # Fallback to constructed URL if parsing failed
+            if (-not $serverZipUrl -or -not $clientZipUrl) {
+                $fallbackUrls = New-ZipUrls -Version $version -PackType $PackType
+                if (-not $serverZipUrl) { $serverZipUrl = $fallbackUrls.ServerZipUrl; $serverZipName = $fallbackUrls.ServerZipName }
+                if (-not $clientZipUrl) { $clientZipUrl = $fallbackUrls.ClientZipUrl; $clientZipName = $fallbackUrls.ClientZipName }
+            }
 
             $releases += [PSCustomObject]@{
                 Version       = $version
                 Type          = $type
                 Date          = $date
-                ServerZipUrl  = $urls.ServerZipUrl
-                ServerZipName = $urls.ServerZipName
-                ClientZipUrl  = $urls.ClientZipUrl
-                ClientZipName = $urls.ClientZipName
+                ServerZipUrl  = $serverZipUrl
+                ServerZipName = $serverZipName
+                ClientZipUrl  = $clientZipUrl
+                ClientZipName = $clientZipName
                 ReleaseUrl    = $versionHistoryUrl
             }
         }

@@ -684,6 +684,17 @@ function Invoke-BackupMenu {
                             # Legacy folder restore
                             Invoke-RestoreBackup -BackupPath $selectedBackup.FullName -InstancePath $restorePath
                         }
+
+                        # Re-detect version from restored instance
+                        $detected = Get-InstalledGtnhVersion -InstancePath $instancePath
+                        if ($detected -ne 'unknown') {
+                            if ($isServer) { $Config.InstalledServerVersion = $detected }
+                            else { $Config.InstalledClientVersion = $detected }
+                        } else {
+                            if ($isServer) { $Config.InstalledServerVersion = '' }
+                            else { $Config.InstalledClientVersion = '' }
+                        }
+                        Save-Config -Config $Config
                     } else {
                         Write-Info "Restore cancelled."
                     }

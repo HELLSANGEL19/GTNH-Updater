@@ -56,15 +56,37 @@ function Show-MainMenu {
         $serverVer = ($Config.InstalledServerVersion ?? '(unknown)') -replace 'nightly-|experimental-', ''
         Write-Host "  Server:     " -NoNewline -ForegroundColor Gray
         $serverNorm = & $normalizeVer $Config.InstalledServerVersion
+        # If installed is a beta, compare against latest beta (if available)
+        $serverLatest = $latestForChannel
+        if ($isStableChannel -and $Config.InstalledServerVersion -match '[-_](beta|rc|pre)' -and $script:CachedLatestBeta) {
+            $serverLatest = $script:CachedLatestBeta
+        }
+        $serverLatestNorm = & $normalizeVer $serverLatest
         if (-not $serverNorm) {
             Write-Host "$serverVer" -ForegroundColor DarkGray
-        } elseif ($latestNorm -and $serverNorm -eq $latestNorm) {
+        } elseif ($serverLatestNorm -and $serverNorm -eq $serverLatestNorm) {
             Write-Host "$serverVer " -NoNewline -ForegroundColor Green
             Write-Host "(up to date)" -ForegroundColor DarkGreen
-        } elseif ($latestNorm -and $serverNorm -ne $latestNorm) {
-            $latestDisplay = ($latestForChannel ?? '') -replace 'nightly-|experimental-', ''
-            Write-Host "$serverVer" -NoNewline -ForegroundColor Yellow
-            Write-Host "  ->  $latestDisplay" -ForegroundColor DarkYellow
+        } elseif ($serverLatestNorm -and $serverNorm -ne $serverLatestNorm) {
+            $installedIsStable = $Config.InstalledServerVersion -match '^\d+\.\d+\.\d+'
+            $latestIsStable = $serverLatest -match '^\d+\.\d+\.\d+'
+            if ($installedIsStable -and $latestIsStable) {
+                $isNewer = $false
+                try { $isNewer = [version]($serverNorm -replace '[-_](beta|rc|pre).*$','') -gt [version]($serverLatestNorm -replace '[-_](beta|rc|pre).*$','') } catch {}
+                if ($isNewer) {
+                    Write-Host "$serverVer" -ForegroundColor Green
+                } else {
+                    $latestDisplay = ($serverLatest ?? '') -replace 'nightly-|experimental-', ''
+                    Write-Host "$serverVer" -NoNewline -ForegroundColor Yellow
+                    Write-Host "  ->  $latestDisplay" -ForegroundColor DarkYellow
+                }
+            } elseif ($installedIsStable -eq $latestIsStable) {
+                $latestDisplay = ($serverLatest ?? '') -replace 'nightly-|experimental-', ''
+                Write-Host "$serverVer" -NoNewline -ForegroundColor Yellow
+                Write-Host "  ->  $latestDisplay" -ForegroundColor DarkYellow
+            } else {
+                Write-Host "$serverVer" -ForegroundColor Yellow
+            }
         } else {
             Write-Host "$serverVer" -ForegroundColor Green
         }
@@ -73,15 +95,36 @@ function Show-MainMenu {
         $clientVer = ($Config.InstalledClientVersion ?? '(unknown)') -replace 'nightly-|experimental-', ''
         Write-Host "  Client:     " -NoNewline -ForegroundColor Gray
         $clientNorm = & $normalizeVer $Config.InstalledClientVersion
+        $clientLatest = $latestForChannel
+        if ($isStableChannel -and $Config.InstalledClientVersion -match '[-_](beta|rc|pre)' -and $script:CachedLatestBeta) {
+            $clientLatest = $script:CachedLatestBeta
+        }
+        $clientLatestNorm = & $normalizeVer $clientLatest
         if (-not $clientNorm) {
             Write-Host "$clientVer" -ForegroundColor DarkGray
-        } elseif ($latestNorm -and $clientNorm -eq $latestNorm) {
+        } elseif ($clientLatestNorm -and $clientNorm -eq $clientLatestNorm) {
             Write-Host "$clientVer " -NoNewline -ForegroundColor Green
             Write-Host "(up to date)" -ForegroundColor DarkGreen
-        } elseif ($latestNorm -and $clientNorm -ne $latestNorm) {
-            $latestDisplay = ($latestForChannel ?? '') -replace 'nightly-|experimental-', ''
-            Write-Host "$clientVer" -NoNewline -ForegroundColor Yellow
-            Write-Host "  ->  $latestDisplay" -ForegroundColor DarkYellow
+        } elseif ($clientLatestNorm -and $clientNorm -ne $clientLatestNorm) {
+            $installedIsStable = $Config.InstalledClientVersion -match '^\d+\.\d+\.\d+'
+            $latestIsStable = $clientLatest -match '^\d+\.\d+\.\d+'
+            if ($installedIsStable -and $latestIsStable) {
+                $isNewer = $false
+                try { $isNewer = [version]($clientNorm -replace '[-_](beta|rc|pre).*$','') -gt [version]($clientLatestNorm -replace '[-_](beta|rc|pre).*$','') } catch {}
+                if ($isNewer) {
+                    Write-Host "$clientVer" -ForegroundColor Green
+                } else {
+                    $latestDisplay = ($clientLatest ?? '') -replace 'nightly-|experimental-', ''
+                    Write-Host "$clientVer" -NoNewline -ForegroundColor Yellow
+                    Write-Host "  ->  $latestDisplay" -ForegroundColor DarkYellow
+                }
+            } elseif ($installedIsStable -eq $latestIsStable) {
+                $latestDisplay = ($clientLatest ?? '') -replace 'nightly-|experimental-', ''
+                Write-Host "$clientVer" -NoNewline -ForegroundColor Yellow
+                Write-Host "  ->  $latestDisplay" -ForegroundColor DarkYellow
+            } else {
+                Write-Host "$clientVer" -ForegroundColor Yellow
+            }
         } else {
             Write-Host "$clientVer" -ForegroundColor Green
         }
@@ -94,7 +137,12 @@ function Show-MainMenu {
     }
 
     Write-Host "  Channel:    " -NoNewline -ForegroundColor Gray
-    Write-Host "$channel" -ForegroundColor $(if ($isStableChannel) { 'Cyan' } else { 'Magenta' })
+    Write-Host "$channel" -NoNewline -ForegroundColor $(if ($isStableChannel) { 'Cyan' } else { 'Magenta' })
+    if ($isStableChannel -and $script:CachedLatestBeta) {
+        Write-Host "  |  $($script:CachedLatestBeta) available" -ForegroundColor DarkYellow
+    } else {
+        Write-Host ""
+    }
 
     # Profile indicator (only shown when not on the default profile)
     $activeProfileName = if ($script:ConfigPath -match 'gtnh-updater-config-(.+)\.json$') { $Matches[1] } else { $null }
@@ -1049,6 +1097,16 @@ function Invoke-BackupsAndCacheMenu {
                         $rollbackOk = Invoke-RollbackFromSnapshot -RollbackDir $selectedSnap.Path `
                             -InstancePath $rollInstancePath -Target $rollTarget
                         if ($rollbackOk) {
+                            # Re-detect version from restored instance
+                            $detected = Get-InstalledGtnhVersion -InstancePath $rollInstancePath
+                            if ($detected -ne 'unknown') {
+                                if ($rollTarget -eq 'server') { $Config.InstalledServerVersion = $detected }
+                                else { $Config.InstalledClientVersion = $detected }
+                            } else {
+                                if ($rollTarget -eq 'server') { $Config.InstalledServerVersion = '' }
+                                else { $Config.InstalledClientVersion = '' }
+                            }
+                            Save-Config -Config $Config
                             Write-Host ""
                             Write-Success "Rollback complete. Your $rollTarget is back to its pre-update state."
                             Write-Info "The snapshot has been preserved — you can rollback again if needed."
