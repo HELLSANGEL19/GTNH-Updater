@@ -1,6 +1,6 @@
 # GTNH Updater
 
-**Version 0.5.1-beta**
+**Version 0.5.2-beta**
 
 Automates updating [GregTech: New Horizons](https://www.gtnewhorizons.com/) server and client instances on Windows and Linux. Interactive and menu-driven. Works with any server setup and any launcher that uses a standard `.minecraft` folder structure (Prism Launcher, MultiMC, PolyMC, ATLauncher, etc.).
 
@@ -67,9 +67,9 @@ On first run, the wizard asks:
 
 If you only manage a server, you'll never be asked about client paths.
 
-### Stable Updates
+### Release Updates
 
-1. Pick a version from the version picker (stable and beta/RC releases listed)
+1. Pick a version from the version picker (stable, beta, and RC releases listed)
 2. Downloads the pack zip (with progress bar, speed display, and integrity verification)
 3. Shows a full color-coded mod comparison before applying anything:
    - Green: new mods | Red: removed mods | Yellow: updated | Cyan: your custom mods
@@ -84,7 +84,7 @@ You always see what will happen before anything is changed.
 1. Fetches the latest mod manifest from DreamAssemblerXXL
 2. Shows an update plan (version change, mod counts, what will happen) and confirms
 3. Creates a rollback snapshot
-4. On first run from stable: cleanly transitions (wipes mods/config/scripts, preserves custom mods)
+4. On first run from release: cleanly transitions (wipes mods/config/scripts, preserves custom mods)
 5. Downloads only changed mods in parallel from GTNH Maven (with GitHub fallback)
 6. Syncs configs, scripts, and resources from the release zip
 7. Downloads any missing external mods from the GTNH assets database
@@ -96,11 +96,11 @@ Custom mods, override mods, and user files are preserved automatically. If somet
 
 | Channel      | What it is |
 |--------------|------------|
-| Stable       | Official releases from gtnewhorizons.com. The version picker also lists beta/RC builds. |
+| Release      | Official versions from gtnewhorizons.com (stable, beta, and RC). The version picker lists all available releases. |
 | Daily        | Dev builds from GitHub. Updated daily. |
 | Experimental | Bleeding-edge builds from GitHub. May be unstable. |
 
-GTNH's release cycle: Experimental > Daily > Beta > Stable.
+GTNH's release cycle: Experimental > Daily > Beta > RC > Stable.
 
 ## Features
 
@@ -111,7 +111,7 @@ Settings you always change after an update (like disabling pollution) can be sav
 - **Browse** config files interactively and pick keys to change
 - **Add manually** or pick from **common patches** (pollution, render distance, etc.)
 - **Export/import** patches to share with friends
-- **Auto-detection**: During stable updates, the updater detects settings you've changed and saves them as patches automatically
+- **Auto-detection**: During release updates, the updater detects settings you've changed and saves them as patches automatically
 
 Supports Forge `.cfg`, `.properties`, and `server.properties`. Section-aware matching handles duplicate keys.
 
@@ -162,7 +162,7 @@ Manage multiple independent GTNH instances (e.g., a main server and a daily test
 ## Main Menu
 
 ```
-[1] Update GTNH (channel)
+[1] Update GTNH (release)
 [2] Settings
 [3] View logs
 [4] View GTNH changelog
@@ -214,6 +214,7 @@ A lightweight **rollback snapshot** is always saved before applying. It's delete
 |---------|----------|
 | "PowerShell 7+ Required" | Use the launcher (`.bat`/`.sh`) or run with `pwsh` not `powershell`. |
 | Download fails or times out | Check internet. Cached files are reused automatically. |
+| Downloads blocked by network | Set a proxy in Settings > Advanced > Proxy settings. Or download the file manually, place it in the `manual/` folder, and re-run. |
 | Update failed after applying | The tool will offer rollback. If that fails, restore from backup. |
 | Integrity check failed | Clear the cache in Settings and try again. |
 | Custom mods warning at startup | Go to Settings > Custom Mods > Validate to auto-fix. |

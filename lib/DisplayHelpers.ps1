@@ -24,6 +24,14 @@
 # ── Channel Constants ─────────────────────────────────────────────────────────
 $script:ValidChannels = @('stable', 'daily', 'experimental')
 
+# Channel display names (internal value -> user-facing label)
+$script:ChannelDisplayNames = @{
+    'stable'       = 'release'
+    'daily'        = 'daily'
+    'experimental' = 'experimental'
+}
+function Get-ChannelDisplayName { param([string]$Channel) return $script:ChannelDisplayNames[$Channel] ?? $Channel }
+
 # ── Terminal Width Helper ─────────────────────────────────────────────────────
 # Safe cross-platform terminal width detection. Returns a usable width for
 # progress bars and line clearing. Falls back to 120 if console is unavailable
@@ -49,13 +57,9 @@ function Get-TerminalWidth {
 function Write-Banner {
     <#
     .SYNOPSIS
-        Display ASCII art banner for "GTNH Updater" at startup with version and beta tag.
+        Display ASCII art banner with version and author.
     #>
     $ver = $script:UpdaterVersion ?? '?.?.?'
-    $updaterLine = "U P D A T E R   v$ver"
-    # Center the updater line under the 36-char-wide border
-    $padLeft = [math]::Max(0, [math]::Floor((36 - $updaterLine.Length) / 2))
-    $centeredUpdater = (' ' * $padLeft) + $updaterLine
     $banner = @"
 
   ════════════════════════════════════
@@ -65,11 +69,11 @@ function Write-Banner {
   ██║   ██║   ██║   ██║╚██╗██║██╔══██║
   ╚██████╔╝   ██║   ██║ ╚████║██║  ██║
    ╚═════╝    ╚═╝   ╚═╝  ╚═══╝╚═╝  ╚═╝
-  $centeredUpdater
   ════════════════════════════════════
-
 "@
     Write-Host $banner -ForegroundColor Cyan
+    Write-Host "  Updater v$ver" -NoNewline -ForegroundColor White
+    Write-Host "  by HELLSANGEL" -ForegroundColor DarkGray
 }
 
 function Write-Header {
@@ -552,5 +556,7 @@ function Write-Phase {
     #>
     param([Parameter(Mandatory)][string]$Name)
     Write-Host ""
-    Write-Host "  ── $Name $('─' * [math]::Max(1, 48 - $Name.Length))" -ForegroundColor DarkGray
+    Write-Host "  ── " -NoNewline -ForegroundColor DarkGray
+    Write-Host "$Name " -NoNewline -ForegroundColor White
+    Write-Host $('─' * [math]::Max(1, 47 - $Name.Length)) -ForegroundColor DarkGray
 }

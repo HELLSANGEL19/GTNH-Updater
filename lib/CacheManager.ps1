@@ -34,6 +34,21 @@ function Get-CachedFile {
 
     $cachedPath = Join-Path $cacheDir $FileName
     if (Test-Path -LiteralPath $cachedPath) {
+        # Validate cached zip files aren't truncated/corrupted (check magic bytes)
+        if ($FileName -match '\.zip$') {
+            try {
+                $bytes = [byte[]]::new(4)
+                $fs = [System.IO.File]::OpenRead($cachedPath)
+                try { $fs.Read($bytes, 0, 4) | Out-Null } finally { $fs.Dispose() }
+                if ($bytes[0] -ne 0x50 -or $bytes[1] -ne 0x4B) {
+                    # Not a valid zip — remove corrupted cache entry
+                    Remove-Item -LiteralPath $cachedPath -Force -ErrorAction SilentlyContinue
+                    return $null
+                }
+            } catch {
+                return $null
+            }
+        }
         return $cachedPath
     }
 
@@ -95,6 +110,16 @@ function Invoke-CachePrune {
                 Write-Log "[CACHE] Pruned: $($file.Name)"
             }
             catch {}
+        }
+    }
+
+    # Remove cached files older than 30 days regardless of count
+    foreach ($file in $cachedFiles) {
+        if (((Get-Date) - $file.LastWriteTime).TotalDays -gt 30) {
+            try {
+                Remove-Item -LiteralPath $file.FullName -Force
+                Write-Log "[CACHE] Expired (>30 days): $($file.Name)"
+            } catch {}
         }
     }
 }

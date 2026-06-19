@@ -42,107 +42,140 @@ function Show-MainMenu {
 
     $channel = $Config.DefaultChannel ?? 'stable'
     $isStableChannel = $channel -eq 'stable'
-    $hasServer = -not [string]::IsNullOrEmpty($Config.ServerPath)
-    $hasClient = -not [string]::IsNullOrEmpty($Config.ClientInstancePath)
+    $hasServer = (-not [string]::IsNullOrEmpty($Config.ServerPath)) -and (Test-Path -LiteralPath $Config.ServerPath)
+    $hasClient = (-not [string]::IsNullOrEmpty($Config.ClientInstancePath)) -and (Test-Path -LiteralPath $Config.ClientInstancePath)
 
     # Determine what "latest" means for the current channel
     $latestForChannel = if ($isStableChannel) { $script:CachedLatestVersion } else { $script:CachedLatestNightly }
     $normalizeVer = { param($v) if ($v) { $v.Trim().TrimStart('v', 'V') } else { $null } }
     $latestNorm = & $normalizeVer $latestForChannel
 
-    # Version display
+    # Version display — channel-agnostic, compares against all known versions
     Write-Host ""
-    if ($hasServer) {
-        $serverVer = ($Config.InstalledServerVersion ?? '(unknown)') -replace 'nightly-|experimental-', ''
-        Write-Host "  Server:     " -NoNewline -ForegroundColor Gray
-        $serverNorm = & $normalizeVer $Config.InstalledServerVersion
-        # If installed is a beta, compare against latest beta (if available)
-        $serverLatest = $latestForChannel
-        if ($isStableChannel -and $Config.InstalledServerVersion -match '[-_](beta|rc|pre)' -and $script:CachedLatestBeta) {
-            $serverLatest = $script:CachedLatestBeta
-        }
-        $serverLatestNorm = & $normalizeVer $serverLatest
-        if (-not $serverNorm) {
-            Write-Host "$serverVer" -ForegroundColor DarkGray
-        } elseif ($serverLatestNorm -and $serverNorm -eq $serverLatestNorm) {
-            Write-Host "$serverVer " -NoNewline -ForegroundColor Green
-            Write-Host "(up to date)" -ForegroundColor DarkGreen
-        } elseif ($serverLatestNorm -and $serverNorm -ne $serverLatestNorm) {
-            $installedIsStable = $Config.InstalledServerVersion -match '^\d+\.\d+\.\d+'
-            $latestIsStable = $serverLatest -match '^\d+\.\d+\.\d+'
-            if ($installedIsStable -and $latestIsStable) {
-                $isNewer = $false
-                try { $isNewer = [version]($serverNorm -replace '[-_](beta|rc|pre).*$','') -gt [version]($serverLatestNorm -replace '[-_](beta|rc|pre).*$','') } catch {}
-                if ($isNewer) {
-                    Write-Host "$serverVer" -ForegroundColor Green
-                } else {
-                    $latestDisplay = ($serverLatest ?? '') -replace 'nightly-|experimental-', ''
-                    Write-Host "$serverVer" -NoNewline -ForegroundColor Yellow
-                    Write-Host "  ->  $latestDisplay" -ForegroundColor DarkYellow
-                }
-            } elseif ($installedIsStable -eq $latestIsStable) {
-                $latestDisplay = ($serverLatest ?? '') -replace 'nightly-|experimental-', ''
-                Write-Host "$serverVer" -NoNewline -ForegroundColor Yellow
-                Write-Host "  ->  $latestDisplay" -ForegroundColor DarkYellow
-            } else {
-                Write-Host "$serverVer" -ForegroundColor Yellow
+
+    # Helper: determine the best "latest" for a given installed version
+    $getVersionStatus = {
+        param([string]$Installed)
+        if ([string]::IsNullOrEmpty($Installed)) { return @{ Status = 'unknown' } }
+
+        $norm = $Installed.Trim().TrimStart('v','V')
+        $display = $Installed -replace 'nightly-|experimental-', ''
+        $hasDate = $Installed -match '(\d{4}-\d{2}-\d{2})'
+        $installedDate = if ($hasDate) { $Matches[1] } else { $null }
+
+        # If installed is pure semver (no date), compare against latest stable/beta
+        $isSemver = ($Installed -match '^\d+\.\d+\.\d+') -and -not $hasDate
+        if ($isSemver) {
+            # Compare against the newest known version (stable or beta, whichever is newer)
+            $target = $null
+            $targetCandidates = @()
+            if ($script:CachedLatestVersion) { $targetCandidates += $script:CachedLatestVersion }
+            if ($script:CachedLatestBeta) { $targetCandidates += $script:CachedLatestBeta }
+            # Pick the candidate with the highest base version (then highest full string)
+            foreach ($tc in $targetCandidates) {
+                if (-not $target) { $target = $tc; continue }
+                $tcBase = ($tc -replace '[-_](beta|rc|pre).*$','').Trim().TrimStart('v','V')
+                $curBase = ($target -replace '[-_](beta|rc|pre).*$','').Trim().TrimStart('v','V')
+                try {
+                    if ([version]$tcBase -gt [version]$curBase) { $target = $tc }
+                    elseif ([version]$tcBase -eq [version]$curBase -and $tc -gt $target) { $target = $tc }
+                } catch {}
             }
-        } else {
-            Write-Host "$serverVer" -ForegroundColor Green
+            if ($target) {
+                $targetNorm = $target.Trim().TrimStart('v','V')
+                if ($norm -eq $targetNorm) {
+                    return @{ Status = 'current'; Display = $display }
+                }
+                $instBase = $norm -replace '[-_](beta|rc|pre).*$',''
+                $targBase = $targetNorm -replace '[-_](beta|rc|pre).*$',''
+                try {
+                    if ([version]$instBase -gt [version]$targBase) {
+                        return @{ Status = 'ahead'; Display = $display }
+                    } elseif ([version]$instBase -eq [version]$targBase -and $norm -ge $targetNorm) {
+                        # Current on releases — check if newer daily exists
+                        if ($script:CachedLatestNightly) {
+                            $nightlyDate = $null
+                            if ($script:CachedLatestNightly -match '(\d{4}-\d{2}-\d{2})') { $nightlyDate = $Matches[1] }
+                            if ($nightlyDate) {
+                                $myRelease = if ($script:CachedWebsiteReleases) { $script:CachedWebsiteReleases | Where-Object { $_.Version -eq $Installed.Trim().TrimStart('v','V') } | Select-Object -First 1 } else { $null }
+                                $myDate = if ($myRelease -and $myRelease.Date) { $myRelease.Date -replace '/','-' } else { $null }
+                                if ($myDate -and $nightlyDate -gt $myDate) {
+                                    $nightlyDisplay = $script:CachedLatestNightly -replace 'nightly-|experimental-', ''
+                                    return @{ Status = 'current_daily_newer'; Display = $display; Latest = $nightlyDisplay }
+                                }
+                            }
+                        }
+                        return @{ Status = 'current'; Display = $display }
+                    }
+                } catch {}
+                $targetDisplay = $target -replace 'nightly-|experimental-', ''
+                return @{ Status = 'behind'; Display = $display; Latest = $targetDisplay }
+            }
+        }
+
+        # Date-based or hybrid: check against latest nightly first, then release dates
+        if ($installedDate) {
+            # Check nightly
+            if ($script:CachedLatestNightly) {
+                $nightlyNorm = $script:CachedLatestNightly.Trim().TrimStart('v','V')
+                if ($norm -eq $nightlyNorm) { return @{ Status = 'current'; Display = $display } }
+                $nightlyDate = $null
+                if ($script:CachedLatestNightly -match '(\d{4}-\d{2}-\d{2})') { $nightlyDate = $Matches[1] }
+                if ($nightlyDate -and $installedDate -lt $nightlyDate) {
+                    $nightlyDisplay = $script:CachedLatestNightly -replace 'nightly-|experimental-', ''
+                    return @{ Status = 'behind'; Display = $display; Latest = $nightlyDisplay }
+                }
+            }
+            # Check release dates
+            if ($script:CachedWebsiteReleases) {
+                try {
+                    $instDt = [datetime]::ParseExact($installedDate, 'yyyy-MM-dd', $null)
+                    $newerReleases = @($script:CachedWebsiteReleases | Where-Object {
+                        $_.Date -and ([datetime]::ParseExact(($_.Date -replace '/','-'), 'yyyy-MM-dd', $null) -gt $instDt)
+                    })
+                    if ($newerReleases.Count -gt 0) {
+                        return @{ Status = 'behind'; Display = $display; Latest = $newerReleases[0].Version }
+                    }
+                } catch {}
+            }
+            return @{ Status = 'current'; Display = $display }
+        }
+
+        # Can't determine — show as-is
+        return @{ Status = 'unknown_version'; Display = $display }
+    }
+
+    if ($hasServer) {
+        Write-Host "  Server:     " -NoNewline -ForegroundColor Gray
+        $sv = & $getVersionStatus $Config.InstalledServerVersion
+        switch ($sv.Status) {
+            'unknown'            { Write-Host "(unknown)" -ForegroundColor DarkGray }
+            'current'            { Write-Host "$($sv.Display) " -NoNewline -ForegroundColor Green; Write-Host "(up to date)" -ForegroundColor DarkGreen }
+            'current_daily_newer'{ Write-Host "$($sv.Display) " -NoNewline -ForegroundColor Green; Write-Host "(daily $($sv.Latest) available)" -ForegroundColor DarkGray }
+            'ahead'              { Write-Host "$($sv.Display)" -ForegroundColor Green }
+            'behind'             { Write-Host "$($sv.Display)" -NoNewline -ForegroundColor Yellow; Write-Host "  ->  $($sv.Latest)" -ForegroundColor DarkYellow }
+            'unknown_version'    { Write-Host "$($sv.Display)" -ForegroundColor Green }
         }
     }
     if ($hasClient) {
-        $clientVer = ($Config.InstalledClientVersion ?? '(unknown)') -replace 'nightly-|experimental-', ''
         Write-Host "  Client:     " -NoNewline -ForegroundColor Gray
-        $clientNorm = & $normalizeVer $Config.InstalledClientVersion
-        $clientLatest = $latestForChannel
-        if ($isStableChannel -and $Config.InstalledClientVersion -match '[-_](beta|rc|pre)' -and $script:CachedLatestBeta) {
-            $clientLatest = $script:CachedLatestBeta
-        }
-        $clientLatestNorm = & $normalizeVer $clientLatest
-        if (-not $clientNorm) {
-            Write-Host "$clientVer" -ForegroundColor DarkGray
-        } elseif ($clientLatestNorm -and $clientNorm -eq $clientLatestNorm) {
-            Write-Host "$clientVer " -NoNewline -ForegroundColor Green
-            Write-Host "(up to date)" -ForegroundColor DarkGreen
-        } elseif ($clientLatestNorm -and $clientNorm -ne $clientLatestNorm) {
-            $installedIsStable = $Config.InstalledClientVersion -match '^\d+\.\d+\.\d+'
-            $latestIsStable = $clientLatest -match '^\d+\.\d+\.\d+'
-            if ($installedIsStable -and $latestIsStable) {
-                $isNewer = $false
-                try { $isNewer = [version]($clientNorm -replace '[-_](beta|rc|pre).*$','') -gt [version]($clientLatestNorm -replace '[-_](beta|rc|pre).*$','') } catch {}
-                if ($isNewer) {
-                    Write-Host "$clientVer" -ForegroundColor Green
-                } else {
-                    $latestDisplay = ($clientLatest ?? '') -replace 'nightly-|experimental-', ''
-                    Write-Host "$clientVer" -NoNewline -ForegroundColor Yellow
-                    Write-Host "  ->  $latestDisplay" -ForegroundColor DarkYellow
-                }
-            } elseif ($installedIsStable -eq $latestIsStable) {
-                $latestDisplay = ($clientLatest ?? '') -replace 'nightly-|experimental-', ''
-                Write-Host "$clientVer" -NoNewline -ForegroundColor Yellow
-                Write-Host "  ->  $latestDisplay" -ForegroundColor DarkYellow
-            } else {
-                Write-Host "$clientVer" -ForegroundColor Yellow
-            }
-        } else {
-            Write-Host "$clientVer" -ForegroundColor Green
+        $cv = & $getVersionStatus $Config.InstalledClientVersion
+        switch ($cv.Status) {
+            'unknown'            { Write-Host "(unknown)" -ForegroundColor DarkGray }
+            'current'            { Write-Host "$($cv.Display) " -NoNewline -ForegroundColor Green; Write-Host "(up to date)" -ForegroundColor DarkGreen }
+            'current_daily_newer'{ Write-Host "$($cv.Display) " -NoNewline -ForegroundColor Green; Write-Host "(daily $($cv.Latest) available)" -ForegroundColor DarkGray }
+            'ahead'              { Write-Host "$($cv.Display)" -ForegroundColor Green }
+            'behind'             { Write-Host "$($cv.Display)" -NoNewline -ForegroundColor Yellow; Write-Host "  ->  $($cv.Latest)" -ForegroundColor DarkYellow }
+            'unknown_version'    { Write-Host "$($cv.Display)" -ForegroundColor Green }
         }
     }
     if (-not $hasServer -and -not $hasClient) {
-        Write-Host "  Server:     " -NoNewline -ForegroundColor DarkGray
-        Write-Host "(not configured)" -ForegroundColor DarkGray
-        Write-Host "  Client:     " -NoNewline -ForegroundColor DarkGray
-        Write-Host "(not configured)" -ForegroundColor DarkGray
+        Write-Host "  No instances configured. Run setup or set paths in Settings." -ForegroundColor DarkGray
     }
 
     Write-Host "  Channel:    " -NoNewline -ForegroundColor Gray
-    Write-Host "$channel" -NoNewline -ForegroundColor $(if ($isStableChannel) { 'Cyan' } else { 'Magenta' })
-    if ($isStableChannel -and $script:CachedLatestBeta) {
-        Write-Host "  |  $($script:CachedLatestBeta) available" -ForegroundColor DarkYellow
-    } else {
-        Write-Host ""
-    }
+    $channelDisplay = Get-ChannelDisplayName $channel
+    Write-Host "$channelDisplay" -ForegroundColor $(if ($isStableChannel) { 'Cyan' } else { 'Magenta' })
 
     # Profile indicator (only shown when not on the default profile)
     $activeProfileName = if ($script:ConfigPath -match 'gtnh-updater-config-(.+)\.json$') { $Matches[1] } else { $null }
@@ -172,7 +205,7 @@ function Show-MainMenu {
     Write-Host "  $('-' * 56)" -ForegroundColor DarkGray
 
     Write-Host ""
-    Write-MenuOption "1" "Update GTNH ($channel)"
+    Write-MenuOption "1" "Update GTNH ($(Get-ChannelDisplayName $channel))"
     Write-MenuOption "2" "Settings"
     Write-MenuOption "3" "View logs"
     Write-MenuOption "4" "View GTNH changelog"
@@ -432,7 +465,7 @@ function Invoke-SettingsMenu {
         $modsTotal = $serverModCount + $clientModCount
 
         Write-Host "  Channel: " -NoNewline -ForegroundColor DarkGray
-        Write-Host "$channel" -NoNewline -ForegroundColor Cyan
+        Write-Host "$(Get-ChannelDisplayName $channel)" -NoNewline -ForegroundColor Cyan
         Write-Host "  |  Backups: " -NoNewline -ForegroundColor DarkGray
         Write-Host "$backupStatus" -NoNewline -ForegroundColor $(if ($Config.BackupEnabled) { 'Green' } else { 'DarkYellow' })
         Write-Host "  |  Mods: " -NoNewline -ForegroundColor DarkGray
@@ -482,6 +515,7 @@ function Invoke-AdvancedSettingsMenu {
         Write-MenuOption "3" "Import config"
         Write-MenuOption "4" "Re-run setup wizard"
         Write-MenuOption "5" "Force clean sync (fixes update issues)"
+        Write-MenuOption "6" "Proxy settings"
         Write-Host ""
         Write-MenuOption "R" "Return"
 
@@ -537,6 +571,26 @@ function Invoke-AdvancedSettingsMenu {
             }
             '5' {
                 Invoke-ForceCleanSync -Config $Config
+                Wait-ForKey
+            }
+            '6' {
+                Write-Header "Proxy Settings"
+                $currentProxy = $Config.ProxyUrl ?? ''
+                Write-Host "  Current: " -NoNewline -ForegroundColor Gray
+                if ($currentProxy) { Write-Host $currentProxy -ForegroundColor Cyan }
+                else { Write-Host "(none)" -ForegroundColor DarkGray }
+                Write-Host ""
+                Write-Info "Set a proxy for downloads if your network blocks direct connections."
+                Write-Info "Example: http://proxy.company.com:8080"
+                Write-Info "Leave blank to clear."
+                $newProxy = Read-UserInput "Proxy URL" -Default $currentProxy
+                if ($newProxy -ne $currentProxy) {
+                    $Config.ProxyUrl = $newProxy
+                    $script:ProxyUrl = $newProxy
+                    Save-Config -Config $Config
+                    if ($newProxy) { Write-Success "Proxy set: $newProxy" }
+                    else { Write-Success "Proxy cleared." }
+                }
                 Wait-ForKey
             }
             { $_ -eq 'R' -or $_ -eq 'r' } { return $Config }
@@ -727,7 +781,7 @@ function Invoke-UpdatePreferencesMenu {
         switch ($choice) {
             '1' {
                 Write-Info "Select default channel:"
-                Write-MenuOption "1" "Stable"
+                Write-MenuOption "1" "Release (stable, beta, RC)"
                 Write-MenuOption "2" "Daily"
                 Write-MenuOption "3" "Experimental"
                 $ch = Read-MenuChoice "Channel"
@@ -740,7 +794,7 @@ function Invoke-UpdatePreferencesMenu {
                 Save-Config -Config $Config
                 # Clear cached version data so it refreshes for the new channel
                 $script:CachedWebsiteReleases = $null
-                Write-Success "Default channel set to: $($Config.DefaultChannel)"
+                Write-Success "Default channel set to: $(Get-ChannelDisplayName $Config.DefaultChannel)"
             }
             '2' {
                 Write-Info "Select server pack type:"
@@ -1207,8 +1261,8 @@ function Invoke-OverrideModsMenu {
 
         Write-Header "Settings > $label Override Mods"
         Write-Info "Pack mods you've replaced with a newer version."
-        Write-Info "During stable updates you'll be asked whether to keep your version or use the pack's."
-        Write-Info "Override mods are respected during both stable and daily/experimental updates."
+        Write-Info "During release updates you'll be asked whether to keep your version or use the pack's."
+        Write-Info "Override mods are respected during both release and daily/experimental updates."
         Write-Host ""
 
         if ($overrideList.Count -gt 0) {
@@ -2577,7 +2631,7 @@ function Invoke-VersionPicker {
                 $tag = '  <-- latest'
             }
             if ($i -eq $latestStableIdx -and $latestStableIdx -ne 0) {
-                $tag = '  <-- latest stable'
+                $tag = '  <-- latest release'
             }
             # Installed tag takes priority but can combine
             if ($r.Version -in $installedVersions -and $i -eq 0) {
@@ -2622,7 +2676,7 @@ function Invoke-VersionPicker {
         }
         $defaultLabel = $releases[0].Version
         if ($latestStableIdx -eq 0) {
-            Write-MenuOption "Enter" "Latest stable ($defaultLabel)"
+            Write-MenuOption "Enter" "Latest release ($defaultLabel)"
         } else {
             Write-MenuOption "Enter" "Newest ($defaultLabel)"
         }
@@ -2737,9 +2791,9 @@ function Show-HelpScreen {
     Write-Host "  " -NoNewline
     Write-Host "Update GTNH" -ForegroundColor Cyan
     Write-Host "  Updates your server and/or client using your default channel." -ForegroundColor Gray
-    Write-Host "  Stable: shows a version picker (stable + beta/RC), downloads the" -ForegroundColor Gray
+    Write-Host "  Release: shows a version picker (stable + beta/RC), downloads the" -ForegroundColor Gray
     Write-Host "  pack zip, and shows a full mod comparison before anything changes." -ForegroundColor Gray
-    Write-Host "  Daily/Experimental: downloads mods from GTNH Maven and configs" -ForegroundColor Gray
+    Write-Host "  Daily/Experimental: downloads mods individually and configs" -ForegroundColor Gray
     Write-Host "  from GitHub. No Java or external tools required." -ForegroundColor Gray
     Write-Host "  If only one target is configured it's selected automatically." -ForegroundColor Gray
     Write-Host ""
@@ -2763,7 +2817,7 @@ function Show-HelpScreen {
     Write-Host "  " -NoNewline
     Write-Host "Custom Mods" -ForegroundColor Cyan
     Write-Host "  Mods not part of GTNH that you've added yourself. Register them" -ForegroundColor Gray
-    Write-Host "  in Settings > Custom Mods so they survive updates." -ForegroundColor Gray
+    Write-Host "  in Settings > Mods so they survive updates." -ForegroundColor Gray
     Write-Host "  Scan: auto-detects by comparing against the official pack." -ForegroundColor Gray
     Write-Host "  Browse: pick from your mods/ folder interactively." -ForegroundColor Gray
     Write-Host "  Validate: fixes stale entries when a mod's filename changed." -ForegroundColor Gray
@@ -2773,7 +2827,7 @@ function Show-HelpScreen {
     Write-Host "Override Mods" -ForegroundColor Cyan
     Write-Host "  Pack mods you've replaced with your own version (e.g. a custom" -ForegroundColor Gray
     Write-Host "  build of GregTech). The updater won't overwrite them." -ForegroundColor Gray
-    Write-Host "  Manage in Settings > Override Mods." -ForegroundColor Gray
+    Write-Host "  Manage in Settings > Mods." -ForegroundColor Gray
     Write-Host ""
 
     Write-Host "  " -NoNewline
@@ -2785,10 +2839,10 @@ function Show-HelpScreen {
 
     Write-Host "  " -NoNewline
     Write-Host "Channels" -ForegroundColor Cyan
-    Write-Host "  Stable  = official releases from gtnewhorizons.com (recommended)." -ForegroundColor Gray
-    Write-Host "  Daily   = dev builds updated daily. No Java required." -ForegroundColor Gray
-    Write-Host "  Experimental = bleeding edge, may be unstable. No Java required." -ForegroundColor Gray
-    Write-Host "  Release cycle: Experimental -> Daily -> Beta -> Stable." -ForegroundColor Gray
+    Write-Host "  Release = official versions from gtnewhorizons.com (stable, beta, RC)." -ForegroundColor Gray
+    Write-Host "  Daily   = dev builds updated daily." -ForegroundColor Gray
+    Write-Host "  Experimental = bleeding edge, may be unstable." -ForegroundColor Gray
+    Write-Host "  Release cycle: Experimental -> Daily -> Beta -> RC -> Stable." -ForegroundColor Gray
     Write-Host "  Change channel in Settings > Update Preferences." -ForegroundColor Gray
     Write-Host ""
 
@@ -2796,14 +2850,15 @@ function Show-HelpScreen {
     Write-Host "Rollback" -ForegroundColor Cyan
     Write-Host "  Before applying, a snapshot of everything being replaced is saved." -ForegroundColor Gray
     Write-Host "  If the update fails mid-way, you'll be offered automatic rollback." -ForegroundColor Gray
-    Write-Host "  Snapshots are deleted after a successful update." -ForegroundColor Gray
+    Write-Host "  Snapshots persist until the next update. Rollback from Settings" -ForegroundColor Gray
+    Write-Host "  > Backups and Cache if your game crashes after an update." -ForegroundColor Gray
     Write-Host ""
 
     Write-Host "  " -NoNewline
     Write-Host "Profiles" -ForegroundColor Cyan
     Write-Host "  Profiles let you manage multiple independent instances (e.g. a" -ForegroundColor Gray
-    Write-Host "  stable server and a daily test server) with separate configs." -ForegroundColor Gray
-    Write-Host "  Create and switch profiles in Settings > Profiles." -ForegroundColor Gray
+    Write-Host "  release server and a daily test server) with separate configs." -ForegroundColor Gray
+    Write-Host "  Create and switch profiles in Settings > Advanced > Profiles." -ForegroundColor Gray
     Write-Host "  If you have more than one profile, you'll be asked to pick one" -ForegroundColor Gray
     Write-Host "  at startup." -ForegroundColor Gray
     Write-Host ""
@@ -2860,26 +2915,18 @@ function Update-VersionCache {
         catch { Write-Log "[WARN] Stable version fallback also failed: $($_.Exception.Message)" }
     }
 
-    $currentChannel = $Config.DefaultChannel ?? 'stable'
-    if ($currentChannel -ne 'stable') {
-        try {
-            # Fetch the actual manifest to get the real latest version (same source the update uses)
-            $manifestUrl = "https://raw.githubusercontent.com/GTNewHorizons/DreamAssemblerXXL/master/releases/manifests/${currentChannel}.json"
-            $manifest = Invoke-RestMethod -Uri $manifestUrl -Headers @{ 'User-Agent' = 'GTNH-Updater-Script' } -TimeoutSec 15 -ErrorAction Stop
-            if ($manifest -and $manifest.config) {
-                $script:CachedLatestNightly = $manifest.config
-                # Track when mods were last updated (may differ from the config tag date)
-                $script:CachedNightlyLastUpdated = $manifest.last_updated
-                Write-Log "[MAIN] Latest $currentChannel`: $($script:CachedLatestNightly) (updated: $($manifest.last_updated))"
-            }
+    # Always fetch the daily manifest for version comparison (regardless of channel)
+    $nightlyChannel = if (($Config.DefaultChannel ?? 'stable') -ne 'stable') { $Config.DefaultChannel } else { 'daily' }
+    try {
+        $manifestUrl = "https://raw.githubusercontent.com/GTNewHorizons/DreamAssemblerXXL/master/releases/manifests/${nightlyChannel}.json"
+        $manifest = Invoke-RestMethod -Uri $manifestUrl -Headers @{ 'User-Agent' = 'GTNH-Updater-Script' } -TimeoutSec 15 -ErrorAction Stop
+        if ($manifest -and $manifest.config) {
+            $script:CachedLatestNightly = $manifest.config
+            $script:CachedNightlyLastUpdated = $manifest.last_updated
+            Write-Log "[MAIN] Latest $nightlyChannel`: $($script:CachedLatestNightly) (updated: $($manifest.last_updated))"
         }
-        catch { Write-Log "[WARN] $currentChannel build check failed: $($_.Exception.Message)" }
     }
-    else {
-        # Channel is stable - clear stale nightly cache
-        $script:CachedLatestNightly = $null
-        $script:CachedNightlyLastUpdated = $null
-    }
+    catch { Write-Log "[WARN] Daily build check failed: $($_.Exception.Message)" }
 
 }
 function Invoke-ProfileMenu {
@@ -3081,6 +3128,9 @@ function Invoke-MainLoop {
 
         # Validate config (add missing fields with defaults)
         $config = Repair-Config -Config $config
+
+        # Set proxy for network operations
+        $script:ProxyUrl = $config.ProxyUrl ?? ''
 
         # Log config context for troubleshooting (redact usernames from paths)
         $redactPath = { param($p) if ($p) { $p -replace '\\Users\\[^\\]+', '\Users\***' -replace '/home/[^/]+', '/home/***' } else { '(not set)' } }
@@ -3312,21 +3362,38 @@ function Invoke-MainLoop {
                             $alreadyCurrent = -not $serverBehind -and -not $clientBehind
 
                             Write-Host ""
-                            Write-Host "  Latest stable: " -NoNewline -ForegroundColor Gray
+                            Write-Host "  Latest release: " -NoNewline -ForegroundColor Gray
                             Write-Host "$($script:CachedLatestVersion)" -ForegroundColor $(if ($alreadyCurrent) { 'Green' } else { 'Green' })
                             if ($alreadyCurrent) {
                                 Write-Host "  Already up to date." -ForegroundColor DarkGreen
                             }
+                            if ($script:CachedLatestBeta -and $script:CachedLatestBeta -ne $script:CachedLatestVersion) {
+                                Write-Host "  Latest beta:   " -NoNewline -ForegroundColor Gray
+                                Write-Host "$($script:CachedLatestBeta)" -ForegroundColor DarkYellow
+                            }
                             Write-Host ""
                             $quickLabel = if ($alreadyCurrent) { "Re-install $($script:CachedLatestVersion)" } else { "Update to $($script:CachedLatestVersion)" }
                             Write-MenuOption "Y" $quickLabel
-                            Write-MenuOption "P" "Pick a different version (beta, older, etc.)"
+                            if ($script:CachedLatestBeta -and $script:CachedLatestBeta -ne $script:CachedLatestVersion) {
+                                # Only show beta option if user isn't already on it
+                                $installedVer = if ($config.InstalledServerVersion) { $config.InstalledServerVersion } else { $config.InstalledClientVersion }
+                                if ($installedVer -ne $script:CachedLatestBeta) {
+                                    Write-MenuOption "B" "Update to $($script:CachedLatestBeta) (beta)"
+                                }
+                            }
+                            Write-MenuOption "P" "Pick a different version"
                             Write-MenuOption "R" "Return to main menu"
 
                             $quickChoice = Read-MenuChoice "Choose"
 
                             if ($quickChoice -eq 'y' -or $quickChoice -eq 'Y') {
                                 $selectedRelease = $latestStableRelease
+                            } elseif (($quickChoice -eq 'b' -or $quickChoice -eq 'B') -and $script:CachedLatestBeta) {
+                                $selectedRelease = $allReleases | Where-Object { $_.Version -eq $script:CachedLatestBeta } | Select-Object -First 1
+                                if (-not $selectedRelease) {
+                                    Write-Warn "Beta $($script:CachedLatestBeta) not found in releases. Opening version picker."
+                                    $selectedRelease = Invoke-VersionPicker -Config $config -Releases $allReleases
+                                }
                             } elseif ($quickChoice -eq 'p' -or $quickChoice -eq 'P') {
                                 $selectedRelease = Invoke-VersionPicker -Config $config -Releases $allReleases
                             } else {

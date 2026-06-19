@@ -127,7 +127,10 @@ function Set-ConfigValue {
         }
 
         if ($found) {
-            Set-Content -LiteralPath $fullPath -Value $lines -Encoding UTF8 -Force
+            # Atomic write: write to temp file then replace original
+            $tempFile = "${fullPath}.tmp"
+            Set-Content -LiteralPath $tempFile -Value $lines -Encoding UTF8 -Force
+            Move-Item -LiteralPath $tempFile -Destination $fullPath -Force
             return $true
         } else {
             $sectionNote = $Section ? " in section '$Section'" : ''

@@ -2,6 +2,7 @@
 cache/
 logs/
 backups/
+manual/
 .temp/
 .nightly-updater/
 staging-*/

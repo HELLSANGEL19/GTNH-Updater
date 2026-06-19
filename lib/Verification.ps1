@@ -6,7 +6,7 @@
 #
 # Checks performed:
 #   - mods/, config/, libraries/ directories exist
-#   - Mod count (warn if < 150 JARs)
+#   - Mod count (warn if < 50 JARs)
 #   - GregTech JAR present (core mod)
 #   - Duplicate mods (same base name, different versions)
 #   - Target-specific: JourneyMapServer (server), options.txt (client)
@@ -17,7 +17,7 @@ function Invoke-Verification {
     .SYNOPSIS
         Run post-update verification checks on an instance.
     .DESCRIPTION
-        Checks that critical directories exist, counts mods (warns if < 150),
+        Checks that critical directories exist, counts mods (warns if < 50),
         verifies GregTech JAR is present, and checks target-specific files.
         Displays results via Write-Success for passes and Write-Warn for issues.
     .PARAMETER InstancePath
@@ -72,8 +72,8 @@ function Invoke-Verification {
     $modCount = 0
     if (Test-Path -LiteralPath $modsPath) {
         $modCount = (Get-ChildItem -LiteralPath $modsPath -Filter '*.jar' -File).Count
-        if ($modCount -lt 150) {
-            $warnings += "Mod count: $modCount JARs (expected 150+, may indicate incomplete extraction)"
+        if ($modCount -lt 50) {
+            $warnings += "Only $modCount mods found (GTNH typically has 250+). Update may be incomplete."
             $allPassed = $false
         }
     }
@@ -92,12 +92,14 @@ function Invoke-Verification {
     if ($Target -eq 'server') {
         $journeyMapServer = Join-Path $InstancePath 'config' 'JourneyMapServer'
         if (-not (Test-Path -LiteralPath $journeyMapServer)) {
-            $warnings += "config/JourneyMapServer is MISSING (may need first server start to generate)"
+            # Not a failure — created on first server start
+            Write-Log "[VERIFY] config/JourneyMapServer not present (generated on first start)"
         }
     } else {
         $optionsFile = Join-Path $InstancePath 'options.txt'
         if (-not (Test-Path -LiteralPath $optionsFile)) {
-            $warnings += "options.txt is MISSING (may need first client launch to generate)"
+            # Not a failure — created on first client launch
+            Write-Log "[VERIFY] options.txt not present (generated on first launch)"
         }
     }
 

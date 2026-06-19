@@ -83,8 +83,9 @@ function Invoke-NightlyUpdate {
                 if ($proc.CommandLine) {
                     # Normalize path separators for comparison (java may use / or \)
                     $normalizedCmd = $proc.CommandLine.Replace('/', '\')
-                    $normalizedPath = $instancePath.Replace('/', '\')
-                    if ($normalizedCmd -like "*$normalizedPath*") {
+                    $normalizedPath = $instancePath.Replace('/', '\').TrimEnd('\')
+                    # Match path followed by separator, quote, space, or end — avoids GTNH matching GTNH-Test
+                    if ($normalizedCmd -match [regex]::Escape($normalizedPath) + '[\\\s"''$]') {
                         $instanceRunning = $true
                         Write-Log "[NIGHTLY] Detected running java process (PID $($proc.ProcessId)) with instance path in command line"
                         break
@@ -96,7 +97,8 @@ function Invoke-NightlyUpdate {
             $javaProcs = Get-Process -Name 'java' -ErrorAction SilentlyContinue
             foreach ($proc in $javaProcs) {
                 $cmdline = Get-Content "/proc/$($proc.Id)/cmdline" -Raw -ErrorAction SilentlyContinue
-                if ($cmdline -and $cmdline -like "*$instancePath*") {
+                $normalizedPath = $instancePath.TrimEnd('/')
+                if ($cmdline -and $cmdline -match [regex]::Escape($normalizedPath) + '[/\x00\s]') {
                     $instanceRunning = $true
                     Write-Log "[NIGHTLY] Detected running java process (PID $($proc.Id)) with instance path in cmdline"
                     break
@@ -157,24 +159,24 @@ function Invoke-NightlyUpdate {
     Write-Header "$($Channel.ToUpper()) Update - $($Target.ToUpper())"
 
     # ── Step 1: Fetch manifest ────────────────────────────────────────────────
-    Write-Dots "Fetching $Channel manifest"
+    Write-Dots "Fetching $Channel mod list"
 
     $manifest = Get-NightlyManifest -Channel $Channel
     if (-not $manifest) {
         Complete-Dots "failed" -Color Red
-        Write-Err "Could not fetch $Channel manifest. Check your internet connection."
+        Write-Err "Could not fetch $Channel mod list. Check your internet connection."
         return
     }
     Complete-Dots "ok"
 
     $configTag = $manifest.config
     if (-not $configTag) {
-        Write-Err "Manifest is missing the 'config' field. The manifest may be malformed."
+        Write-Err "The $Channel build data appears incomplete. Try again later."
         Write-Info "This is usually a temporary issue. Try again in a few minutes."
         return
     }
     if (-not $manifest.github_mods) {
-        Write-Err "Manifest is missing 'github_mods'. The manifest may be malformed."
+        Write-Err "The $Channel build data appears incomplete. Try again later."
         Write-Info "This is usually a temporary issue. Try again in a few minutes."
         return
     }
@@ -208,7 +210,7 @@ function Invoke-NightlyUpdate {
             @(Get-ChildItem -LiteralPath $modsDir -Filter '*.jar' -File -ErrorAction SilentlyContinue).Count -gt 10
         if ($hasExistingMods) {
             # Has mods but no version - assume stable, trigger transition
-            Write-Info "No version recorded but mods exist. Treating as stable-to-daily transition."
+            Write-Info "No version recorded but mods exist. Treating as release-to-daily transition."
             $isTransition = $true
         }
         # If no mods either, it's a fresh install - no transition needed, just download everything
@@ -549,7 +551,7 @@ function Invoke-NightlyUpdate {
 
     # ── Step 7: Handle stable-to-nightly transition ─────────────────────────────
     if ($isTransition) {
-        Write-Step "Transitioning from stable to $Channel..."
+        Write-Info "Switching to $Channel — performing clean install..."
         Write-Info "Clearing mods, config, and scripts for clean $Channel install..."
 
         $modsDir = Join-Path $instancePath 'mods'
@@ -720,7 +722,7 @@ function Invoke-NightlyUpdate {
         -Target $Target -State $state -Config $Config -PrecomputedDiff $precomputedDiff
 
     if (-not $modSyncResult.Success) {
-        Write-Err "Mod sync failed. Check output above for details."
+        Write-Err "Mod update failed. Check output above for details."
         Invoke-NightlyRollback -RollbackDir $nightlyRollbackDir -InstancePath $instancePath `
             -FoldersToSnapshot $nightlyFoldersToSnapshot
         Remove-TempDir $nightlyRollbackDir
@@ -736,7 +738,7 @@ function Invoke-NightlyUpdate {
         -ReleaseInfo $releaseInfo -Manifest $manifest
 
     if (-not $configSyncOk) {
-        Write-Err "Config sync failed. Mods were updated but configs may be missing/outdated."
+        Write-Err "Config update failed. Mods were updated but configs may be missing/outdated."
         Write-Info "The instance may not work correctly without matching configs."
         Write-Host ""
         if ($nightlyRollbackDir -and (Confirm-Action "Rollback entire update to pre-update state?")) {
@@ -1237,15 +1239,14 @@ function Invoke-NightlyUpdate {
 
     # ── Success ───────────────────────────────────────────────────────────────
     Write-Host ""
-    Write-Host "  ✓ Update complete!" -ForegroundColor Green
-    Write-Host ""
+    Write-Host "  Update complete!" -ForegroundColor Green
     Write-Host "  $($Target.ToUpper()) -> " -NoNewline -ForegroundColor Gray
-    Write-Host "$versionLabel" -ForegroundColor Green
+    Write-Host "$versionLabel" -NoNewline -ForegroundColor Green
     if ($modSyncResult.Downloaded -eq 0 -and $modSyncResult.Removed -eq 0) {
-        Write-Host "  Mods: all $($modSyncResult.Unchanged) up to date" -ForegroundColor DarkGreen
+        Write-Host "  (all $($modSyncResult.Unchanged) up to date)" -ForegroundColor DarkGreen
     }
     else {
-        Write-Host "  Mods: $($modSyncResult.Downloaded) added, $($modSyncResult.Removed) removed, $($modSyncResult.Unchanged) unchanged" -ForegroundColor Gray
+        Write-Host "  |  $($modSyncResult.Downloaded) added, $($modSyncResult.Removed) removed, $($modSyncResult.Unchanged) unchanged" -ForegroundColor Gray
     }
     Write-Host ""
     if (-not $SkipPostMenu) {
@@ -2029,7 +2030,7 @@ function Invoke-NightlyModSync {
         }
 
         if ($failCount -gt 0) {
-            Write-Warn "$failCount mod(s) failed from Maven. Retrying from GitHub..."
+            Write-Warn "$failCount mod(s) failed to download. Retrying from alternate source..."
             Write-Host ""
             # Fallback: use gtnh-assets.json browser_download_url (same as Caedis)
             $fallbackAssets = $null
@@ -2939,8 +2940,8 @@ function Show-NightlyUpdatePlan {
     }
     elseif ($IsTransition) {
         Write-Host ""
-        Write-Host "  [!] FIRST-TIME TRANSITION: Clean install required" -ForegroundColor Yellow
-        Write-Host "  Stable and $Channel use different mod versions that can't coexist." -ForegroundColor Gray
+        Write-Host "  [!] FIRST-TIME SETUP: Clean install required" -ForegroundColor Yellow
+        Write-Host "  Release and $Channel use different mod versions that can't coexist." -ForegroundColor Gray
         Write-Host "  mods/, config/, and scripts/ will be replaced with $Channel versions." -ForegroundColor Gray
         Write-Host "  Your custom mods, user files, and settings are preserved automatically." -ForegroundColor Gray
         Write-Host "  A rollback snapshot is saved in case you want to go back." -ForegroundColor Gray

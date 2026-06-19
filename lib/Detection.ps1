@@ -32,7 +32,7 @@ function Find-JavaInstallations {
         Array of [PSCustomObject]@{ Path; MajorVersion; VersionText }
     #>
 
-    Write-Step "Scanning for Java installations..."
+    Write-Dots "Scanning for Java installations"
 
     $found = @{}  # Use hashtable to deduplicate by resolved path
     $javaBinaryName = if ($IsWindows) { 'java.exe' } else { 'java' }
@@ -146,7 +146,18 @@ function Find-JavaInstallations {
 
     foreach ($javaExe in $found.Keys) {
         try {
-            $versionOutput = & $javaExe -version 2>&1 | Out-String
+            # Run java -version with a timeout to avoid hanging on broken installs
+            $stderrFile = [System.IO.Path]::GetTempFileName()
+            $proc = Start-Process -FilePath $javaExe -ArgumentList '-version' -PassThru -NoNewWindow `
+                -RedirectStandardError $stderrFile -ErrorAction Stop
+            if (-not $proc.WaitForExit(5000)) {
+                try { $proc.Kill() } catch {}
+                try { Remove-Item -LiteralPath $stderrFile -Force } catch {}
+                continue
+            }
+            $versionOutput = Get-Content -LiteralPath $stderrFile -Raw -ErrorAction SilentlyContinue
+            try { Remove-Item -LiteralPath $stderrFile -Force -ErrorAction SilentlyContinue } catch {}
+            if (-not $versionOutput) { continue }
             $majorVersion = 0
             if ($versionOutput -match '"(\d+)') {
                 $majorVersion = [int]$Matches[1]
@@ -178,7 +189,7 @@ function Find-JavaInstallations {
     # Sort by MajorVersion descending
     $results = $results | Sort-Object -Property MajorVersion -Descending
 
-    Write-Info "Found $($results.Count) Java installation(s)."
+    Complete-Dots "$($results.Count) found"
     return $results
 }
 
@@ -343,7 +354,7 @@ function Find-ServerInstances {
         Array of [PSCustomObject]@{ Name; Path; Version }
     #>
 
-    Write-Step "Scanning for GTNH server instances..."
+    Write-Dots "Scanning for GTNH server instances"
 
     $results = @()
     $foundPaths = @{}  # Deduplicate
@@ -491,8 +502,7 @@ function Find-ServerInstances {
     }
 
     Write-Host "`r                                        " -NoNewline  # Clear progress line
-    Write-Host "`r" -NoNewline
-    Write-Info "Found $($results.Count) GTNH server instance(s)."
+    Complete-Dots "$($results.Count) found"
     return $results
 }
 
@@ -509,7 +519,7 @@ function Find-PrismInstances {
         Array of [PSCustomObject]@{ Name; Path; Version }
     #>
 
-    Write-Step "Scanning for GTNH client instances..."
+    Write-Dots "Scanning for GTNH client instances"
 
     $results = @()
 
@@ -609,6 +619,6 @@ function Find-PrismInstances {
         }
     }
 
-    Write-Info "Found $($results.Count) GTNH client instance(s)."
+    Complete-Dots "$($results.Count) found"
     return $results
 }

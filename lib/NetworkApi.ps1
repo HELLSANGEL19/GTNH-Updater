@@ -69,6 +69,13 @@ function Invoke-GitHubApi {
         [string]$Method = 'Get'
     )
 
+    $maxRetries = 1
+    for ($attempt = 0; $attempt -le $maxRetries; $attempt++) {
+        if ($attempt -gt 0) {
+            Start-Sleep -Seconds 2
+            Write-Log "[API] Retry $attempt for $Uri"
+        }
+
     try {
         $headers = @{ 'User-Agent' = 'GTNH-Updater-Script' }
 
@@ -143,6 +150,7 @@ function Invoke-GitHubApi {
                 $ex.InnerException -is [System.Net.WebException] -or
                 $ex -is [System.Net.Http.HttpRequestException] -or
                 $ex.InnerException -is [System.Net.Http.HttpRequestException]) {
+            if ($attempt -lt $maxRetries) { continue }  # Retry on network errors
             Write-Err "Network request failed. Check your internet connection."
             Write-Log "[ERROR] Network failure for $Uri - $($ex.Message)"
             # Return cached response if available (offline resilience)
@@ -152,12 +160,14 @@ function Invoke-GitHubApi {
             }
         }
         else {
-            Write-Err "API request failed: $($ex.Message)"
+            if ($attempt -lt $maxRetries) { continue }  # Retry on unknown errors
+            Write-Err "Request failed: $($ex.Message)"
             Write-Log "[ERROR] API failure for $Uri - $($ex.Message)"
         }
 
         return $null
     }
+    } # end retry loop
 }
 
 function Get-LatestStableRelease {
@@ -376,6 +386,20 @@ function Invoke-FileDownload {
         }
     }
 
+    # Check for manually-placed file (for users with blocked download sites)
+    $manualDir = Join-Path $script:ScriptDir 'manual'
+    $manualFile = Join-Path $manualDir $fileName
+    if (Test-Path -LiteralPath $manualFile) {
+        Write-Info "Using manually-provided file: $fileName"
+        try {
+            Copy-Item -LiteralPath $manualFile -Destination $OutPath -Force
+            Write-Success "Loaded $Description from manual/ folder."
+            return $true
+        } catch {
+            Write-Warn "Could not copy manual file: $($_.Exception.Message)"
+        }
+    }
+
     Write-Info "Downloading: $Description"
 
     $httpClient = $null
@@ -387,13 +411,33 @@ function Invoke-FileDownload {
         $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 
         # Use HttpClient for streaming download with progress
-        $httpClient = [System.Net.Http.HttpClient]::new()
+        # Configure proxy if set in config
+        $handler = [System.Net.Http.HttpClientHandler]::new()
+        if ($script:ProxyUrl -and $script:ProxyUrl -ne '') {
+            $handler.Proxy = [System.Net.WebProxy]::new($script:ProxyUrl)
+            $handler.UseProxy = $true
+        }
+        $httpClient = [System.Net.Http.HttpClient]::new($handler)
         $httpClient.DefaultRequestHeaders.Add('User-Agent', 'GTNH-Updater-Script')
         $httpClient.Timeout = [TimeSpan]::FromMinutes(10)
 
-        $response = $httpClient.GetAsync($Url, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).Result
+        # Use a shorter timeout for the initial connection (catches blocked sites quickly)
+        $connectCts = [System.Threading.CancellationTokenSource]::new([TimeSpan]::FromSeconds(30))
+        try {
+            $response = $httpClient.GetAsync($Url, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead, $connectCts.Token).Result
+        } catch {
+            $innerEx = $_.Exception.InnerException ?? $_.Exception
+            if ($innerEx -is [System.Threading.Tasks.TaskCanceledException] -or $innerEx -is [System.OperationCanceledException]) {
+                Write-Err "Connection timed out after 30 seconds. The download site may be blocked or unreachable."
+                Write-Log "[ERROR] Connection timeout (30s) for $Url"
+                return $false
+            }
+            throw
+        } finally {
+            $connectCts.Dispose()
+        }
         if ([int]$response.StatusCode -eq 404) {
-            Write-Err "File not found at download URL (404). The version may not be available for this pack type."
+            Write-Err "File not found at download URL. The version may not be available for this pack type."
             Write-Log "[ERROR] Download 404: $Url"
             return $false
         }

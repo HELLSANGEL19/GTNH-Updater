@@ -78,9 +78,15 @@ function Show-VersionMismatchWarning {
     $clientVer = $Config.InstalledClientVersion
 
     if (-not [string]::IsNullOrEmpty($serverVer) -and
-        -not [string]::IsNullOrEmpty($clientVer) -and
-        $serverVer -ne $clientVer) {
-        Write-Warn "VERSION MISMATCH: Server is $serverVer but Client is $clientVer"
-        Write-Warn "Players may experience issues connecting with mismatched versions."
+        -not [string]::IsNullOrEmpty($clientVer)) {
+        # Normalize for comparison: strip prefixes, trim
+        $sNorm = ($serverVer -replace 'nightly-|experimental-', '').Trim().TrimStart('v','V')
+        $cNorm = ($clientVer -replace 'nightly-|experimental-', '').Trim().TrimStart('v','V')
+        if ($sNorm -ne $cNorm) {
+            $sDisp = $serverVer -replace 'nightly-|experimental-', ''
+            $cDisp = $clientVer -replace 'nightly-|experimental-', ''
+            Write-Host "  Mismatch:   " -NoNewline -ForegroundColor Gray
+            Write-Host "Server $sDisp / Client $cDisp" -ForegroundColor DarkYellow
+        }
     }
 }

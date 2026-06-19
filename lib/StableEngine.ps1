@@ -76,7 +76,58 @@ function Invoke-StableUpdate {
         return
     }
 
-    Write-Header "$($ChannelLabel.Substring(0,1).ToUpper() + $ChannelLabel.Substring(1)) Update - $($Target.ToUpper())"
+    # Block updates if the game/server is running to prevent file corruption
+    $instanceRunning = $false
+    Write-Log "[STABLE] Checking for running instance at: $instancePath"
+    try {
+        if ($IsWindows) {
+            $javaProcs = Get-CimInstance Win32_Process -Filter "Name LIKE 'java%'" -ErrorAction SilentlyContinue
+            foreach ($proc in $javaProcs) {
+                if ($proc.CommandLine) {
+                    $normalizedCmd = $proc.CommandLine.Replace('/', '\')
+                    $normalizedPath = $instancePath.Replace('/', '\').TrimEnd('\')
+                    # Match path followed by separator, quote, space, or end — avoids GTNH matching GTNH-Test
+                    if ($normalizedCmd -match [regex]::Escape($normalizedPath) + '[\\\s"''$]') {
+                        $instanceRunning = $true
+                        break
+                    }
+                }
+            }
+        } else {
+            $javaProcs = Get-Process -Name 'java' -ErrorAction SilentlyContinue
+            foreach ($proc in $javaProcs) {
+                $cmdline = Get-Content "/proc/$($proc.Id)/cmdline" -Raw -ErrorAction SilentlyContinue
+                $normalizedPath = $instancePath.TrimEnd('/')
+                if ($cmdline -and $cmdline -match [regex]::Escape($normalizedPath) + '[/\x00\s]') {
+                    $instanceRunning = $true
+                    break
+                }
+            }
+        }
+    } catch {}
+    if (-not $instanceRunning -and $Target -eq 'server') {
+        $sessionLock = Join-Path $instancePath 'world' 'session.lock'
+        if (Test-Path -LiteralPath $sessionLock) {
+            try {
+                $stream = [System.IO.File]::Open($sessionLock, 'Open', 'ReadWrite', 'None')
+                $stream.Dispose()
+            } catch { $instanceRunning = $true }
+        }
+    }
+    if ($instanceRunning) {
+        Write-Host ""
+        Write-Err "Minecraft appears to be running from this instance!"
+        Write-Info "Close the game/server before updating to prevent file corruption."
+        Write-Host ""
+        if (-not (Confirm-Action "Force update anyway? (RISK OF CORRUPTION)")) {
+            return
+        }
+        Write-Warn "Proceeding despite running instance."
+        Write-Log "[STABLE] User forced update despite running instance"
+    }
+
+    $displayLabel = Get-ChannelDisplayName $ChannelLabel
+    Write-Header "$($displayLabel.Substring(0,1).ToUpper() + $displayLabel.Substring(1)) Update - $($Target.ToUpper())"
 
     # ── Step 1: Query latest version ──────────────────────────────────────────
 
@@ -1084,14 +1135,13 @@ function Invoke-StableUpdate {
         $updateSucceeded = $true
 
         Write-Host ""
-        Write-Host "  ✓ Update complete!" -ForegroundColor Green
-        Write-Host ""
+        Write-Host "  Update complete!" -ForegroundColor Green
         Write-Host "  $($Target.ToUpper()) -> " -NoNewline -ForegroundColor Gray
-        Write-Host "v$latestVersion" -ForegroundColor Green
+        Write-Host "v$latestVersion" -NoNewline -ForegroundColor Green
         if ($added.Count -eq 0 -and $removed.Count -eq 0 -and $updated.Count -eq 0) {
-            Write-Host "  Mods: re-installed (no changes)" -ForegroundColor DarkGreen
+            Write-Host "  (re-installed)" -ForegroundColor DarkGreen
         } else {
-            Write-Host "  Mods: $($added.Count) added, $($removed.Count) removed, $($updated.Count) updated" -ForegroundColor Gray
+            Write-Host "  |  $($added.Count) added, $($removed.Count) removed, $($updated.Count) updated" -ForegroundColor Gray
         }
         Write-Host ""
         $openLabel = if ($IsWindows) { "Open $Target folder in Explorer" } else { "Open $Target folder in file manager" }
@@ -1312,7 +1362,7 @@ function Invoke-DeleteFolders {
     foreach ($folder in $foldersToDelete) {
         $folderPath = Join-Path $InstancePath $folder
         if (Test-Path -LiteralPath $folderPath) {
-            Write-Host "    $folder/" -NoNewline -ForegroundColor Gray
+            Write-Host "  $folder/" -NoNewline -ForegroundColor Gray
             try {
                 $oldProgress = $ProgressPreference; $ProgressPreference = 'SilentlyContinue'
                 Remove-Item -LiteralPath $folderPath -Recurse -Force

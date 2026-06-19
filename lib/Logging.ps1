@@ -92,5 +92,9 @@ function Write-Log {
     $timestamp = Get-Date -Format 'HH:mm:ss'
     # Redact usernames from paths before writing to log (handles both slash directions)
     $safeMessage = $Message -replace '\\Users\\[^\\]+', '\Users\***' -replace '/Users/[^/]+', '/Users/***' -replace '/home/[^/]+', '/home/***' -replace '(?<=[A-Za-z]:/)Users/[^/]+', 'Users/***'
-    "${timestamp}  ${safeMessage}" | Out-File -FilePath $script:LogFile -Append -Encoding UTF8
+    try {
+        "${timestamp}  ${safeMessage}" | Out-File -FilePath $script:LogFile -Append -Encoding UTF8
+    } catch {
+        # Log directory may have been deleted — silently fail
+    }
 }

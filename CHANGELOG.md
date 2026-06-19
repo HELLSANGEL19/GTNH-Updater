@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.5.2-beta] - 2026-06-15
+
+### Improved
+
+* "Stable" channel renamed to "Release" — makes it clear that beta and RC versions are included
+* Beta versions now shown as a one-press option when starting an update
+* Proxy support — set a proxy URL in Settings > Advanced for networks that block downloads
+* Manual file override — place pack zips in the `manual/` folder to skip downloading
+* Connection timeout reduced to 30 seconds (fails fast when sites are blocked instead of hanging)
+
+### Fixed
+
+* Version display no longer shows incorrect update arrows when on a beta
+* Release updates now detect running game/server instances (previously only daily/experimental checked)
+* Running instance detection no longer false-positives on similarly-named paths (e.g., GTNH vs GTNH-Test)
+* Various bug fixes and stability improvements
+
 ## [0.5.1-beta] - 2026-06-07
 
 ### Fixed

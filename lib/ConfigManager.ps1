@@ -45,6 +45,7 @@ function New-DefaultConfig {
         LastSeenScriptVersion  = ''
         ProfileLabel           = ''
         LastUpdateTarget       = ''
+        ProxyUrl               = ''
     }
 }
 
@@ -199,6 +200,13 @@ function Repair-Config {
         $repaired = $true
     }
 
+    # Validate channel value
+    if ($Config.DefaultChannel -notin $script:ValidChannels) {
+        Write-Log "[REPAIR] Invalid channel '$($Config.DefaultChannel)' - resetting to 'stable'"
+        $Config.DefaultChannel = 'stable'
+        $repaired = $true
+    }
+
     if ($repaired) {
         Save-Config -Config $Config
         Write-Success "Configuration saved."
@@ -231,7 +239,7 @@ function Show-CurrentConfig {
     Write-Info "Server path:          $($Config.ServerPath ? $Config.ServerPath : '(not set)')"
     Write-Info "Client path:          $($Config.ClientInstancePath ? $Config.ClientInstancePath : '(not set)')"
     Write-Info "Java path:            $($Config.JavaPath ? $Config.JavaPath : '(not set)')"
-    Write-Info "Default channel:      $($Config.DefaultChannel ?? 'stable')"
+    Write-Info "Default channel:      $(Get-ChannelDisplayName ($Config.DefaultChannel ?? 'stable'))"
     Write-Info "Pack type:            $(if (($Config.JavaVersion ?? 'java17') -eq 'java17') { 'Java 17+' } else { 'Java 8' })"
     Write-Info "Backup enabled:       $($Config.BackupEnabled ? 'Yes' : 'No')"
     Write-Info "Backup directory:     $($Config.BackupDir ? $Config.BackupDir : '(default)')"

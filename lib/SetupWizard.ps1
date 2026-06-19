@@ -493,7 +493,7 @@ function Invoke-InteractiveSetup {
 
     # Default channel
     Write-Info "Select default update channel:"
-    Write-MenuOption "1" "Stable (official releases from gtnewhorizons.com)"
+    Write-MenuOption "1" "Release (stable, beta, and RC versions from gtnewhorizons.com)"
     Write-MenuOption "2" "Daily (dev builds, updated daily)"
     Write-MenuOption "3" "Experimental (bleeding edge, may be unstable)"
 
@@ -504,7 +504,7 @@ function Invoke-InteractiveSetup {
         '3' { 'experimental' }
         default { $config.DefaultChannel ?? 'stable' }
     }
-    Write-Success "Default channel: $($config.DefaultChannel)"
+    Write-Success "Default channel: $(Get-ChannelDisplayName $config.DefaultChannel)"
 
     # Server pack type
     Write-Info ""
